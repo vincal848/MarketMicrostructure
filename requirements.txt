@@ -1,0 +1,5 @@
+numpy>=1.26
+
+# Only needed for lobster.py's CSV parsing. The book engine, Hawkes
+# simulation, and agent formulas do not import it.
+pandas>=2.1

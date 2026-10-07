@@ -8,12 +8,16 @@ One clock drives three sources of activity:
    (`flow.FlowMarks`):
 
        MB / MS   market order of a sampled size against the opposite side
-       LA        limit order at the best price of a random side
+       LA        limit order one tick from the opposite best (= at the best of
+                 its side when the spread is one tick), on a random side
        LI        limit order d ticks inside the spread (capped to stay inside);
                  an LA when the spread is one tick
-       LD        limit order d >= 1 ticks behind the best
-       C         cancel (part of) a *background* order whose level is
-                 nearest d ticks from the best of a random side
+       LD        limit order d >= 1 ticks behind that anchor
+       C         delete a *background* order whose level is nearest d ticks
+                 from the best of a random side. A whole order: real cancels
+                 are overwhelmingly deletions, and sampling a size apart
+                 from the order truncated most cancels, so depth outgrew
+                 removals and queues never emptied.
 
    Passive events pick the bid or ask side with equal probability; the
    six-type alphabet does not record side.
@@ -45,7 +49,7 @@ import numpy as np
 
 from microstructure.book import Depth, Fill, Order, OrderBook, Side
 from microstructure.flow import N_FLOW_TYPES, ClassifiedFlow, FlowMarks, FlowRecorder, FlowType
-from microstructure.hawkes import HawkesParams, IntArray, OnlineHawkes
+from microstructure.hawkes import FloatArray, HawkesParams, IntArray, OnlineHawkes
 from microstructure.stylized import MarketTape
 
 NS_PER_SECOND = 1_000_000_000
@@ -129,6 +133,7 @@ class SimulationResult:
     order_log: list[tuple[float, float]]  # (decided, arrived) per agent action
     agent_market_orders: int
     excitations: IntArray  # external (agent) excitations per type
+    background_times: FloatArray  # every proposed background event's time, applied or not
 
 
 _DECIDE, _ARRIVE = 0, 1
@@ -148,8 +153,13 @@ class MarketSimulator:
         self.config = config
         self.marks = marks
         self.agents = list(agents)
-        self.rng = np.random.default_rng(config.seed)
-        self.hawkes = OnlineHawkes(params, self.rng)
+        # Two independent streams from one seed: event *times* (Hawkes) and
+        # what events *do* (sides, marks, which order a cancel picks). Book
+        # state then cannot perturb background event times, which keeps
+        # common-random-numbers comparisons between agents tightly paired.
+        timing, effects = np.random.SeedSequence(config.seed).spawn(2)
+        self.rng = np.random.default_rng(effects)
+        self.hawkes = OnlineHawkes(params, np.random.default_rng(timing))
         self.book = OrderBook()
         self._ids = itertools.count(1)
         self._background: dict[Side, dict[int, list[int]]] = {Side.BID: {}, Side.ASK: {}}
@@ -165,6 +175,7 @@ class MarketSimulator:
         self._skipped = np.zeros(N_FLOW_TYPES, dtype=np.int64)
         self._excitations = np.zeros(N_FLOW_TYPES, dtype=np.int64)
         self._order_log: list[tuple[float, float]] = []
+        self._background_times: list[float] = []
         self._agent_market_orders = 0
         bids, asks = initial_depth
         for side, levels in ((Side.BID, bids), (Side.ASK, asks)):
@@ -240,6 +251,7 @@ class MarketSimulator:
     def _background_event(self, time: float, kind_index: int) -> None:
         kind = FlowType(kind_index)
         self._generated[kind] += 1
+        self._background_times.append(time)
         applied = False
         if kind in (FlowType.MB, FlowType.MS):
             applied = self._background_market(time, kind)
@@ -270,27 +282,39 @@ class MarketSimulator:
         return True
 
     def _background_add(self, time: float, kind: FlowType) -> bool:
+        """Place a background limit order of type LA / LI / LD.
+
+        Prices anchor one tick from the opposite best. The marks were measured
+        mostly at a one-tick spread (78% of the time on SPY), where that anchor
+        *is* the same-side best, so nothing changes there. After a sweep leaves
+        a gap, anchoring to the far-away same-side best kept the spread open
+        indefinitely, whereas real liquidity providers re-quote against the
+        opposite side and close it. The applied flow records each event as
+        drawn (type and sampled distance).
+        """
         tick = self.config.tick
         side = self._random_side()
-        bid, ask = self.book.best_bid(), self.book.best_ask()
-        same = bid if side is Side.BID else ask
         toward_spread = 1 if side is Side.BID else -1
-        if same is None:
-            other = ask if side is Side.BID else bid
-            reference = round(self._last_mid) if other is None else other
-            same = reference - toward_spread * tick
-            kind = FlowType.LA
+        bid, ask = self.book.best_bid(), self.book.best_ask()
+        same, opposite = (bid, ask) if side is Side.BID else (ask, bid)
+        if opposite is not None:
+            anchor = opposite - toward_spread * tick
+        elif same is not None:
+            anchor = same
+        else:
+            anchor = round(self._last_mid / tick) * tick - toward_spread * tick
         distance = 0
+        price = anchor
         if kind is FlowType.LI:
             spread_ticks = 0 if bid is None or ask is None else (ask - bid) // tick
-            if spread_ticks >= 2:
+            if spread_ticks >= 2 and same is not None:
                 distance = min(self._sample(self.marks.distances[FlowType.LI], minimum=1), spread_ticks - 1)
+                price = same + toward_spread * distance * tick
             else:
                 kind = FlowType.LA
         elif kind is FlowType.LD:
             distance = self._sample(self.marks.distances[FlowType.LD], minimum=1)
-        sign = toward_spread if kind is FlowType.LI else -toward_spread
-        price = same + sign * distance * tick
+            price = anchor - toward_spread * distance * tick
         qty = self._sample(self.marks.sizes[kind], minimum=1)
         self._add_background(side, price, qty)
         self._recorder.passive(round(time * NS_PER_SECOND), kind, qty, distance)
@@ -310,9 +334,8 @@ class MarketSimulator:
             )
             price = min(levels, key=lambda p: (abs(p - target), p))
             order_id = int(self.rng.choice(levels[price]))
-            resting = self.book.resting_order(order_id).qty
-            qty = min(self._sample(self.marks.sizes[FlowType.C], minimum=1), resting)
-            self.book.cancel_order(order_id, qty)
+            qty = self.book.resting_order(order_id).qty
+            self.book.cancel_order(order_id)  # a whole order: real cancels are overwhelmingly deletions
             distance = abs(best - price) // self.config.tick
             self._recorder.passive(round(time * NS_PER_SECOND), FlowType.C, qty, distance)
             return True
@@ -444,4 +467,5 @@ class MarketSimulator:
             order_log=list(self._order_log),
             agent_market_orders=self._agent_market_orders,
             excitations=self._excitations.copy(),
+            background_times=np.array(self._background_times),
         )

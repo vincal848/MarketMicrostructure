@@ -5,7 +5,54 @@ versions follow [Semantic Versioning](https://semver.org/). Each roadmap phase
 (see [docs/ROADMAP.md](docs/ROADMAP.md)) is logged in two steps: the tests
 that define it, then the implementation that makes them pass.
 
-## [Unreleased]: Phase 2 fix, estimator convergence on real flow
+## [Unreleased]: Phase 4 fixes, simulator realism on calibrated SPY flow
+
+Phase 4's acceptance run (5 × 30 min of the calibrated 11:00 SPY market
+against the real tape) passed on event rates and flow statistics. It failed
+on prices, and three defects were found and fixed in turn, each test-first.
+
+### Defects, tests, fixes
+1. **Book volume drift.** A background cancel removed
+   `min(sampled size, a random order's size)` shares, so most cancels removed
+   less than a whole order. Adds outran removals 1.7:1, best queues grew from
+   1e5 to 4e5 shares in five minutes, and the mid never moved (realized
+   variance ≈ 4 against 12,500 real). The test
+   `test_background_cancels_delete_whole_orders` failed first. The fix:
+   cancels delete the whole chosen order, as real cancels overwhelmingly do.
+2. **Gaps never closed.** Adds anchored to their own side's best, so after
+   a sweep the spread stayed open (mean 255 ticks). The test
+   `test_passive_orders_anchor_one_tick_from_the_opposite_best` failed
+   first. The fix: passive orders anchor one tick from the opposite best.
+   That equals the old rule at a one-tick spread, which is where the marks
+   were measured (78% of the time on SPY).
+3. **Stub-quote reservoir.** Real placement distances have an absurd tail
+   (LD p90 = 795 ticks, max 2.6 million). Those orders became the best price
+   whenever the near book thinned, and the mid jumped hundreds of ticks.
+   The test `test_marks_within_a_distance_drop_far_placements_only` failed
+   first. The fix: `FlowMarks.within(max_ticks)`, exposed as an experiment
+   `[market] max_distance_ticks` (20 for SPY, chosen from caps of 20, 50
+   and 100 by the 60 s volatility match).
+
+Also: the simulator now draws event *times* (Hawkes) and event *effects*
+(sides, marks, cancel targets) from independent seed streams, so book state
+cannot perturb when background events occur. This tightens
+common-random-numbers pairing. The test
+`test_background_event_times_do_not_depend_on_passive_agents` failed first
+with a frequently filled touch quoter. `SimulationResult.background_times`
+exposes the proposed event times.
+
+Test revisions forced by the fixes, each still asserting the original
+intent as an exact invariant:
+- The agent-order test now uses a quote-once agent and checks that placed
+  volume equals resting plus filled. Fills now happen, because the market
+  moves.
+- The queue-priority test allows one replacement per fill.
+- The 5% per-type rate test runs 20,000 s instead of 4,000 s, so 5% is
+  about 2.5σ under Hawkes clustering.
+
+Experiments compute AS parameters once per distinct `gamma`.
+
+## Phase 2 fix, estimator convergence on real flow
 
 Found while preparing the Phase 4–6 acceptance runs. The calibrated model's
 stationary intensity was 74 events/s against 131/s realized in the same

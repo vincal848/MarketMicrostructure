@@ -76,3 +76,11 @@ def test_experiment_trains_selects_and_tests_a_dqn(workspace: Path) -> None:
     assert (run / "policy.pt").exists()
     assert set(results["dqn_vs"]) == {"fixed", "as"}
     assert len(results["training"]["episode_returns"]) == 4
+
+
+def test_max_distance_ticks_truncates_the_scenario_marks(workspace: Path) -> None:
+    capped = CONFIG.replace("horizon = 20.0", "horizon = 20.0\nmax_distance_ticks = 2")
+    (workspace / "experiment.toml").write_text(capped)
+    scenario = build_scenario(load_config(workspace / "experiment.toml"))
+    assert list(scenario.marks.distances[FlowType.LD]) == [1, 2]
+    assert list(scenario.marks.distances[FlowType.C]) == [0, 1, 2]

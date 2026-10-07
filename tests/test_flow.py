@@ -14,7 +14,7 @@ from microstructure.events import (
     OrderEvent,
     ReplaceOrder,
 )
-from microstructure.flow import ClassifiedFlow, FlowType, classify, marks
+from microstructure.flow import ClassifiedFlow, FlowMarks, FlowType, classify, marks
 
 TICK = 100  # $0.01 in ITCH/LOBSTER price units
 
@@ -142,3 +142,19 @@ def test_marks_collect_sizes_and_distances_per_type() -> None:
     assert list(m.sizes[FlowType.LD]) == [10, 10, 9]
     assert list(m.distances[FlowType.LD]) == [1, 1, 3]
     assert list(m.distances[FlowType.C]) == [1]
+
+
+def test_marks_within_a_distance_drop_far_placements_only() -> None:
+    m = FlowMarks(
+        sizes={kind: np.array([100, 5_000]) for kind in FlowType},
+        distances={
+            FlowType.LI: np.array([1, 2]),
+            FlowType.LD: np.array([1, 3, 795, 2_660_264]),
+            FlowType.C: np.array([0, 4, 900]),
+        },
+    )
+    near = m.within(4)
+    assert list(near.distances[FlowType.LD]) == [1, 3]
+    assert list(near.distances[FlowType.C]) == [0, 4]
+    assert list(near.distances[FlowType.LI]) == [1, 2]
+    assert list(near.sizes[FlowType.MB]) == [100, 5_000]  # sizes are untouched

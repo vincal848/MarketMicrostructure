@@ -109,6 +109,17 @@ class FlowMarks:
     sizes: dict[FlowType, IntArray]
     distances: dict[FlowType, IntArray]
 
+    def within(self, max_ticks: int) -> FlowMarks:
+        """Drop distance samples beyond `max_ticks` from the touch.
+
+        Real books carry stub quotes far from the market (SPY 2019-01-30: LD
+        p90 = 795 ticks, max 2.6 million). They are irrelevant to the
+        microstructure, but in a simulator they pile up as a far reservoir,
+        and whenever the near book thins they become the best price, so the
+        mid jumps by hundreds of ticks.
+        """
+        return FlowMarks(self.sizes, {kind: d[d <= max_ticks] for kind, d in self.distances.items()})
+
 
 def marks(flow: ClassifiedFlow) -> FlowMarks:
     sizes = {kind: flow.qty[flow.kind == kind] for kind in FlowType}

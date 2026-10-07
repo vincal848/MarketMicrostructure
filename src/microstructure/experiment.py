@@ -113,6 +113,7 @@ class MarketSpec:
     attribution_horizon: float = 1.0
     maker_fee: float = 0.0
     taker_fee: float = 0.0
+    max_distance_ticks: int | None = None  # see FlowMarks.within; None keeps every sample
 
 
 @dataclass(frozen=True)
@@ -191,7 +192,10 @@ def load_config(path: Path) -> ExperimentConfig:
     for key in ("calibration", "marks", "depth"):
         data[key] = (base / data[key]).resolve()
     market = _take(
-        top["market"], "market", {"horizon"}, {"latency", "attribution_horizon", "maker_fee", "taker_fee"}
+        top["market"],
+        "market",
+        {"horizon"},
+        {"latency", "attribution_horizon", "maker_fee", "taker_fee", "max_distance_ticks"},
     )
     seeds = _take(top["seeds"], "seeds", {"calibration", "train", "validation", "test"})
     agents: list[AgentSpec] = []
@@ -246,9 +250,12 @@ def _depth(path: Path) -> Depth:
 def build_scenario(config: ExperimentConfig, horizon: float | None = None) -> Scenario:
     """The simulated market the config describes (`horizon` overrides it)."""
     calibration = json.loads(config.data.calibration.read_text(encoding="utf-8"))
+    marks = _marks(config.data.marks)
+    if config.market.max_distance_ticks is not None:
+        marks = marks.within(config.market.max_distance_ticks)
     return Scenario(
         params=_params_from_window(calibration["windows"][config.data.window]),
-        marks=_marks(config.data.marks),
+        marks=marks,
         initial_depth=_depth(config.data.depth),
         tick=config.data.tick,
         horizon=config.market.horizon if horizon is None else horizon,
@@ -389,11 +396,12 @@ def _new_run_directory(root: Path, name: str) -> Path:
 def run_experiment(config: ExperimentConfig, out_root: Path) -> Path:
     """Run the experiment and return its run directory."""
     scenario = build_scenario(config)
-    as_params = {
-        spec.name: calibrate_avellaneda_stoikov(scenario, spec.gamma, config.seeds.calibration)
-        for spec in config.agents
-        if isinstance(spec, AvellanedaStoikovSpec)
+    as_specs = [spec for spec in config.agents if isinstance(spec, AvellanedaStoikovSpec)]
+    by_gamma = {
+        gamma: calibrate_avellaneda_stoikov(scenario, gamma, config.seeds.calibration)
+        for gamma in sorted({spec.gamma for spec in as_specs})
     }
+    as_params = {spec.name: by_gamma[spec.gamma] for spec in as_specs}
     factories = {spec.name: _agent_factory(spec, scenario, as_params) for spec in config.agents}
     market = config.market
     table = evaluate(

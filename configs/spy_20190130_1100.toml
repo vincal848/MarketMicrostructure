@@ -18,6 +18,7 @@ latency = 0.0005  # 500 microseconds from decision to the book
 attribution_horizon = 1.0
 maker_fee = -20.0  # $0.0020/share rebate, in 1/10000-dollar units
 taker_fee = 30.0  # $0.0030/share fee
+max_distance_ticks = 20  # drop stub-quote placements (see FlowMarks.within)
 
 [seeds]
 calibration = [0, 4]

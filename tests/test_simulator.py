@@ -67,6 +67,25 @@ class FarQuoter:
 
 
 @dataclass
+class QuoteOnce:
+    """Quotes 50 ticks away at its first decision and never again, even after
+    fills, so every share it ever placed is accounted for exactly."""
+
+    decision_interval: float = 1e9
+    fills: list[AgentFill] = field(default_factory=list)
+    quoted: bool = False
+
+    def decide(self, view: MarketView) -> list[Quote | SendMarketOrder]:
+        if self.quoted:
+            return []
+        self.quoted = True
+        return [Quote(bid=(MID - 50 * TICK, 7), ask=(MID + 50 * TICK, 9))]
+
+    def on_fill(self, fill: AgentFill) -> None:
+        self.fills.append(fill)
+
+
+@dataclass
 class TouchQuoter:
     """Joins the best bid and ask every second."""
 
@@ -100,8 +119,10 @@ class OneMarketBuy:
 
 
 def test_background_event_rates_match_the_stationary_intensity() -> None:
-    result = _simulator(horizon=4000.0).run()
-    rates = result.generated / 4000.0
+    # Long enough that 5% is ~2.5 standard deviations for the rarest type
+    # once Hawkes clustering inflates the count variance.
+    result = _simulator(horizon=20000.0).run()
+    rates = result.generated / 20000.0
     assert rates == pytest.approx(_params().stationary_intensity(), rel=0.05)
 
 
@@ -128,12 +149,15 @@ def test_applied_flow_uses_the_calibrated_marks() -> None:
 
 
 def test_background_cancels_never_touch_agent_orders() -> None:
-    agent = FarQuoter()
+    # Market orders may fill the agent's quotes, but nothing else may remove
+    # them: on each side, resting plus filled volume equals what was placed.
+    agent = QuoteOnce()
     simulator = _simulator(horizon=600.0, agents=(agent,))
     simulator.run()
-    resting = simulator.agent_orders(0)
-    assert {(o.side, o.qty) for o in resting} == {(Side.BID, 7), (Side.ASK, 9)}
-    assert agent.fills == []
+    resting = {o.side: o.qty for o in simulator.agent_orders(0)}
+    for side, placed in ((Side.BID, 7), (Side.ASK, 9)):
+        filled = sum(f.qty for f in agent.fills if f.side is side)
+        assert resting.get(side, 0) + filled == placed
 
 
 def test_agent_orders_reach_the_book_after_the_latency() -> None:
@@ -157,11 +181,12 @@ def test_agent_fills_carry_side_price_and_quantity() -> None:
 
 def test_unchanged_quotes_keep_their_queue_position() -> None:
     # Re-sending an identical quote every second must not cancel and re-add
-    # the orders (which would send them to the back of the queue).
+    # the orders (which would send them to the back of the queue). Only a
+    # fill, which changes an order's size, may cause a replacement.
     agent = FarQuoter(decision_interval=1.0)
     simulator = _simulator(horizon=60.0, agents=(agent,))
     simulator.run()
-    assert simulator.agent_order_count(0) == 2
+    assert 2 <= simulator.agent_order_count(0) <= 2 + len(agent.fills)
 
 
 def test_agent_market_orders_excite_the_background_flow() -> None:
@@ -183,3 +208,49 @@ def test_agent_market_order_fills_are_aggressive() -> None:
     _simulator(horizon=1.0, agents=(agent,)).run()
     assert sum(f.qty for f in agent.fills) == 100
     assert all(f.aggressive and f.side is Side.BID for f in agent.fills)
+
+
+def test_background_cancels_delete_whole_orders() -> None:
+    # Regression: cancels removed min(sampled size, random order's size), so
+    # most cancelled less than an order. Calibrated to SPY, adds outran
+    # removals ~1.7:1 and best queues grew from 1e5 to 4e5 shares in five
+    # minutes; the price never moved. Real cancels are overwhelmingly full
+    # deletions, so a background cancel deletes the whole order it picks.
+    marks = _marks()
+    tiny_cancels = FlowMarks({**marks.sizes, FlowType.C: np.array([1])}, marks.distances)
+    config = SimulationConfig(horizon=300.0, tick=TICK, seed=0)
+    flow = MarketSimulator(_params(), tiny_cancels, _depth(), config).run().flow
+    cancelled = flow.qty[flow.kind == FlowType.C]
+    assert len(cancelled) > 100
+    # Whole remaining orders: sizes are 100/200/300 adds or 500 seeds, less
+    # any 100/200/300 fills, so multiples of 100 -- never the 1-share mark.
+    assert np.all(cancelled % 100 == 0)
+    assert cancelled.min() >= 100
+
+
+def test_passive_orders_anchor_one_tick_from_the_opposite_best() -> None:
+    # Regression: adds were placed relative to their own side's best. After a
+    # sweep left a gap, new bids kept joining the far-away best and the
+    # spread never closed (calibrated to SPY: mean 255 ticks vs 1.24 real).
+    # Marks were measured mostly at a one-tick spread, where the same-side
+    # best is one tick from the opposite best, so orders anchor there.
+    only_adds = HawkesParams(
+        mu=[1e-9, 1e-9, 5.0, 1e-9, 1e-9, 1e-9], alpha=np.zeros((6, 6)), beta=np.ones((6, 6))
+    )
+    gapped = ([(MID - 40 * TICK, 500)], [(MID, 500)])  # 40-tick spread
+    config = SimulationConfig(horizon=2.0, tick=TICK, seed=1)
+    simulator = MarketSimulator(only_adds, _marks(), gapped, config)
+    result = simulator.run()
+    bids, asks = simulator.book.depth_snapshot(1)
+    assert result.generated[FlowType.LA] > 2
+    assert asks[0][0] - bids[0][0] == TICK  # the first add closed the gap, from whichever side
+
+
+def test_background_event_times_do_not_depend_on_passive_agents() -> None:
+    # Common random numbers: the Hawkes event times must come from their own
+    # random stream, so an agent that only quotes cannot change when
+    # background events happen (it can only change what they do to the book).
+    alone = _simulator(horizon=300.0, seed=4).run()
+    with_agent = _simulator(horizon=300.0, seed=4, agents=(TouchQuoter(),)).run()  # passive, often filled
+    np.testing.assert_array_equal(alone.generated, with_agent.generated)
+    np.testing.assert_array_equal(alone.background_times, with_agent.background_times)

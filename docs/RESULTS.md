@@ -138,3 +138,95 @@ roadmap's first extension. Three simulator defects found on the way here
 (volume drift, unclosed gaps, a stub-quote reservoir) are fixed and logged.
 Before those fixes, simulated variance was 4 (a frozen book), then 5×10⁷
 (gaps that never closed).
+
+## M4 and M5: market makers on the calibrated market (Phases 5 and 6)
+
+**Experiment.** `configs/spy_20190130_1100.toml`, run directory
+`runs/experiments/20261007T071910Z-spy-20190130-1100/` (manifest pins git
+`88157e3`, clean; numpy 2.5.3, scipy 1.18.1, torch 2.14.1+cpu).
+
+- Market: the validated 11:00 SPY scenario above, in 5-minute episodes.
+- Order latency: 0.5 ms.
+- Fees: maker rebate $0.0020/share, taker fee $0.0030/share.
+- PnL attribution horizon: 1 s.
+- Seeds, all disjoint: calibration 0–3, DQN training 1000–1999 (200
+  episodes used), validation 5000–5009, test 9000–9029.
+- Avellaneda-Stoikov is calibrated on the calibration seeds, in ticks:
+  σ = 1.311 ticks/√s, κ = 2.664 /tick, γ = 1e-4 (a preference, not
+  estimated).
+- The DQN is a 64×64 Double DQN with 16 offset actions and inventory
+  penalty λ = 0.002. The checkpoint with the best validation PnL
+  (episode 160 of 200) is the one tested.
+
+```bash
+microstructure experiment configs/spy_20190130_1100.toml --out runs/experiments
+```
+
+Results per 5-minute episode, mean over the 30 test seeds, in dollars
+(the run files report 1/10000-dollar units):
+
+| Agent | PnL [95% CI] | Spread capture | Adverse selection (1 s) | Inventory PnL | Fees | Fills | Max \|inventory\| |
+|---|---|---|---|---|---|---|---|
+| Fixed spread, 1 tick | +21.7 [−72.6, +108.8] | +45.4 | −59.7 | +31.0 | −5.1 (rebate) | 92.0 | 1,032 |
+| Avellaneda-Stoikov | **−946.3** [−1,329.8, −606.7] | +40.2 | **−526.7** | −471.5 | −11.7 | 150.7 | 320 |
+| AS, inventory cap 500 | **−815.3** [−1,104.6, −546.7] | +40.3 | −504.5 | −362.9 | −11.8 | 150.3 | 316 |
+| Double DQN | +10.9 [−40.7, +55.7] | +37.8 | **+35.5** | −64.3 | −1.9 | 66.1 | 519 |
+
+Paired differences on the same test seeds (bootstrap 95% CI):
+
+| Comparison | PnL difference per episode |
+|---|---|
+| DQN − Avellaneda-Stoikov | **+957.2** [+642.7, +1,325.4] |
+| DQN − AS capped | **+826.2** [+583.2, +1,091.4] |
+| DQN − fixed spread | −10.8 [−116.5, +99.8], not significant |
+
+**M4 acceptance: met.** Every baseline traded in every one of the 30 test
+seeds (minimum 5 fills for the fixed spread, 29 for AS). This was the
+legacy project's failure. PnL is attributed for every run, and the
+components sum exactly to mark-to-market PnL.
+
+**M5 acceptance: met** (trained reproducibly from the config and seed,
+compared on held-out seeds with CIs and attribution).
+
+**Reading.**
+- **The attribution says why AS loses.** Calibrated correctly, it quotes at
+  the touch and trades the most (151 fills an episode). Its spread capture
+  is positive, but its fills are followed by the price moving through them:
+  −$527 of adverse selection within one second, and more afterwards in the
+  inventory term. This is the failure the closed form ignores.
+  Avellaneda-Stoikov assumes fills are uninformed, and in a market whose
+  flow clusters (branching ratio 0.94 here), they are not.
+- **The DQN learned to avoid toxic fills rather than to earn more spread.**
+  It trades less than half as often as AS, and its adverse-selection term
+  is *positive*: its fills tend to be followed by favourable moves. That is
+  the kind of state-dependent quoting the observation (imbalance, recent
+  signed flow, queue position) makes possible. It beats both AS variants
+  decisively.
+- **The DQN is not significantly better than the fixed spread.** Neither
+  makes significant money: both CIs straddle zero. So the honest headline
+  is that learning avoided the closed form's adverse selection, not that it
+  found a profitable strategy.
+- **The magnitudes are probably overstated.** The simulator's mid is
+  2.5–4× too volatile at these horizons (see M3 validation), which inflates
+  adverse selection for every agent, so the absolute losses should not be
+  read literally. The paired comparisons are on identical simulated flow:
+  event times come from a separate random stream, so agents cannot perturb
+  them.
+- **Validation PnL was volatile across checkpoints** (+0.05M, −0.26M,
+  −0.17M, +1.00M, +0.79M at episodes 40–200). Selecting on validation seeds
+  and testing on separate seeds is what keeps that from inflating the test
+  result.
+
+## Throughput (Phase 7)
+
+`microstructure bench --out runs/bench.json` (seeded synthetic workloads,
+one core, Windows 11, Python 3.13):
+
+| Hot path | Throughput |
+|---|---|
+| Order book operations (add / cancel / market, 20 live levels) | 84,500 ops/s |
+| Replay of normalized events | 610,000 events/s |
+| Simulator (6-type Hawkes, background flow only) | 26,900 events/s, about 200× real time for SPY |
+
+The real-data acceptance test (`MICROSTRUCTURE_ITCH=... pytest -m data`,
+the full-day M1 replay) passes in 149 s.

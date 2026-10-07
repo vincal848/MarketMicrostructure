@@ -116,8 +116,11 @@ def estimate_fill_curve(
     if len(tape.trade_times) == 0:
         raise ValueError("tape has no trades")
     order_times = np.unique(tape.trade_times)
+    # The quote strictly *before* each trade: a tape records the post-trade
+    # quote at the trade's own timestamp, against which every sweep would
+    # look like it stopped at the touch.
     quote_index = np.clip(
-        np.searchsorted(tape.times, tape.trade_times, side="right") - 1, 0, len(tape.times) - 1
+        np.searchsorted(tape.times, tape.trade_times, side="left") - 1, 0, len(tape.times) - 1
     )
     touch = np.where(tape.trade_sign > 0, tape.ask[quote_index], tape.bid[quote_index])
     beyond = np.where(tape.trade_sign > 0, tape.trade_prices - touch, touch - tape.trade_prices) / tick

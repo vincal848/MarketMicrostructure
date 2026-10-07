@@ -15,7 +15,9 @@ jobs:
           python-version: "3.13"
           cache: pip
       - name: Install
-        run: pip install -e ".[dev]"
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev,rl]"
       - name: Ruff lint
         run: ruff check .
       - name: Ruff format
@@ -38,3 +40,18 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Test
         run: pytest -q
+
+  rl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev,rl]"
+      - name: Test (with PyTorch)
+        run: pytest -q tests/test_rl.py tests/test_env.py

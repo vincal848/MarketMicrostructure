@@ -170,29 +170,62 @@ class MarketSimulator:
         for side, levels in ((Side.BID, bids), (Side.ASK, asks)):
             for price, qty in levels:
                 self._add_background(side, price, qty)
-        self._last_mid = self._mid() or 0.0
+        self._last_mid = self.mid() or 0.0
+        for index in range(len(self.agents)):
+            self._schedule(0.0, _DECIDE, index, None)
 
     # --- public ------------------------------------------------------------
 
+    @property
+    def now(self) -> float:
+        return self.hawkes.now
+
     def run(self) -> SimulationResult:
-        for index in range(len(self.agents)):
-            self._schedule(0.0, _DECIDE, index, None)
-        horizon = self.config.horizon
+        """Simulate to the horizon and return the result."""
+        self.advance(self.config.horizon)
+        return self.finish()
+
+    def advance(self, until: float) -> None:
+        """Process every event strictly before `until` (capped at the
+        horizon) and stop the clock there. Agent activity scheduled exactly
+        at `until` waits for the next call, so stepping in increments is
+        identical to one `run`."""
+        until = min(until, self.config.horizon)
         while True:
-            next_agent_time = self._queue[0][0] if self._queue else horizon
-            deadline = min(next_agent_time, horizon)
+            next_agent_time = self._queue[0][0] if self._queue else until
+            deadline = min(next_agent_time, until)
             background = self.hawkes.next_event(until=deadline)
             if background is not None:
                 self._background_event(*background)
                 continue
-            if deadline >= horizon:
-                break
+            if deadline >= until:
+                return
             time, _, kind, index, action = heapq.heappop(self._queue)
             if kind == _DECIDE:
                 self._decide(time, index)
             elif action is not None:
                 self._arrive(time, index, action)
-        return self._finish()
+
+    @property
+    def last_mid(self) -> float:
+        """The most recent two-sided mid (the initial one before any change)."""
+        return self._last_mid
+
+    def mid(self) -> float | None:
+        bid, ask = self.book.best_bid(), self.book.best_ask()
+        return None if bid is None or ask is None else (bid + ask) / 2.0
+
+    def trade_flow_since(self, since: float) -> tuple[int, int]:
+        """(buyer-initiated, seller-initiated) traded volume at or after `since`."""
+        bought = sold = 0
+        for time, _, qty, sign in reversed(self._trades):
+            if time < since:
+                break
+            if sign > 0:
+                bought += qty
+            else:
+                sold += qty
+        return bought, sold
 
     def agent_orders(self, index: int) -> list[Order]:
         """The agent's orders currently resting on the book."""
@@ -230,7 +263,7 @@ class MarketSimulator:
         if (self.book.best_ask() if side is Side.BID else self.book.best_bid()) is None:
             return False
         qty = self._sample(self.marks.sizes[kind], minimum=1)
-        mid = self._mid()
+        mid = self.mid()
         fills, leftover = self.book.market_order(side, qty)
         self._settle_fills(time, fills, aggressor_side=side, aggressor_agent=None, mid=mid)
         self._recorder.market(round(time * NS_PER_SECOND), kind, qty - leftover)
@@ -329,7 +362,7 @@ class MarketSimulator:
 
     def _agent_market(self, time: float, index: int, order: SendMarketOrder) -> None:
         kind = FlowType.MB if order.side is Side.BID else FlowType.MS
-        mid = self._mid()
+        mid = self.mid()
         fills, _ = self.book.market_order(order.side, order.qty)
         self._settle_fills(time, fills, aggressor_side=order.side, aggressor_agent=index, mid=mid)
         self.hawkes.excite(kind)
@@ -351,7 +384,7 @@ class MarketSimulator:
         order_id = next(self._ids)
         self._agent_of[order_id] = index
         self._agent_created[index] += 1
-        mid = self._mid()
+        mid = self.mid()
         fills = self.book.add_limit_order(order_id, side, price, qty)
         self._settle_fills(time, fills, aggressor_side=side, aggressor_agent=index, mid=mid)
         if order_id in self.book:
@@ -380,10 +413,6 @@ class MarketSimulator:
 
     # --- recording -----------------------------------------------------------
 
-    def _mid(self) -> float | None:
-        bid, ask = self.book.best_bid(), self.book.best_ask()
-        return None if bid is None or ask is None else (bid + ask) / 2.0
-
     def _record_quote(self, time: float) -> None:
         bid, ask = self.book.best_bid(), self.book.best_ask()
         if bid is not None and ask is not None:
@@ -393,7 +422,8 @@ class MarketSimulator:
             bids.append(bid)
             asks.append(ask)
 
-    def _finish(self) -> SimulationResult:
+    def finish(self) -> SimulationResult:
+        """The run so far as an immutable result."""
         times, bids, asks = self._quotes
         trades = np.array(self._trades, dtype=np.float64).reshape(-1, 4)
         tape = MarketTape(

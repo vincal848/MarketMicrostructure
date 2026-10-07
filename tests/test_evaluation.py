@@ -6,8 +6,7 @@ import numpy as np
 import pytest
 
 from microstructure.agents import AvellanedaStoikovAgent, FixedSpreadAgent
-from microstructure.avellaneda_stoikov import ASParams
-from microstructure.evaluation import Scenario, evaluate, paired_difference
+from microstructure.evaluation import Scenario, calibrate_avellaneda_stoikov, evaluate, paired_difference
 from microstructure.flow import FlowMarks, FlowType
 from microstructure.hawkes import HawkesParams
 from microstructure.simulator import Agent
@@ -56,14 +55,23 @@ def test_an_agent_evaluated_against_itself_differs_by_exactly_zero() -> None:
     assert (diff.mean, diff.low, diff.high) == (0.0, 0.0, 0.0)
 
 
+def test_avellaneda_stoikov_is_calibrated_from_the_simulator_itself() -> None:
+    params = calibrate_avellaneda_stoikov(_scenario(), gamma=0.001, seeds=range(2), sigma_interval=5.0)
+    assert params.gamma == 0.001
+    assert 0.0 < params.sigma < 50.0  # ticks per sqrt(second)
+    assert 0.0 < params.kappa < 10.0  # per tick
+    # Calibrated in ticks, the quotes sit within a few ticks of the touch.
+    assert (2 / params.gamma) * np.log1p(params.gamma / params.kappa) / 2 < 5.0
+
+
 def test_baselines_trade_and_their_pnl_is_attributed() -> None:
+    scenario = _scenario()
+    as_params = calibrate_avellaneda_stoikov(scenario, gamma=0.001, seeds=range(100, 102), sigma_interval=5.0)
     agents: dict[str, Callable[[], Agent]] = {
         "fixed": lambda: FixedSpreadAgent(half_spread_ticks=1, tick=TICK, size=100),
-        "as": lambda: AvellanedaStoikovAgent(
-            ASParams(gamma=0.01, sigma=2.0, kappa=0.5), tick=TICK, size=100, horizon=120.0
-        ),
+        "as": lambda: AvellanedaStoikovAgent(as_params, tick=TICK, size=100, horizon=120.0),
     }
-    table = evaluate(_scenario(), agents, seeds=range(4), attribution_horizon=1.0)
+    table = evaluate(scenario, agents, seeds=range(4), attribution_horizon=1.0)
     for name in agents:
         runs = table.runs[name]
         assert len(runs) == 4

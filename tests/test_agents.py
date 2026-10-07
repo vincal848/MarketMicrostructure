@@ -155,3 +155,32 @@ def test_sigma_estimate_of_a_random_walk() -> None:
         horizon=3600.0,
     )
     assert estimate_sigma(tape, tick=TICK, interval=10.0) == pytest.approx(math.sqrt(10.0), rel=0.1)
+
+
+def test_fill_depth_is_measured_against_the_quote_before_the_trade() -> None:
+    # Regression: a tape records the post-trade quote at the trade's own
+    # timestamp. Measured against that quote, a sweep through two ask
+    # levels looked like it stopped at the touch.
+    mid = 1_000_000
+    times, bids, asks, trade_times, trade_prices = [], [], [], [], []
+    for k in range(40):
+        t = float(k)
+        times += [t - 0.5, t]  # quote before the order, then the post-trade quote
+        bids += [mid - 50, mid - 50]
+        sweep = 1 if k % 2 else 0  # every other order sweeps one tick past the touch
+        asks += [mid + 50, mid + 50 + sweep * TICK]
+        trade_times += [t] * (sweep + 1)
+        trade_prices += [mid + 50 + d * TICK for d in range(sweep + 1)]
+    n = len(trade_times)
+    tape = MarketTape(
+        times=np.array(times),
+        bid=np.array(bids),
+        ask=np.array(asks),
+        trade_times=np.array(trade_times),
+        trade_prices=np.array(trade_prices),
+        trade_qty=np.full(n, 100),
+        trade_sign=np.ones(n, dtype=np.int64),
+        horizon=40.0,
+    )
+    _, kappa = estimate_fill_curve(tape, tick=TICK, max_ticks=2, min_orders=5)
+    assert kappa == pytest.approx(np.log(2.0), rel=1e-6)  # 40 orders reach the touch, 20 reach one tick past

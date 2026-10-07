@@ -24,6 +24,45 @@ that define it, then the implementation that makes them pass.
   oldest entries and samples batches; Double DQN learns the best arm of a
   noisy 4-armed bandit; training is bit-for-bit reproducible from its seed.
 
+### Implementation
+- `simulator.py`: `advance(until)` and a public `finish()`; `run()` is
+  `advance(horizon)` followed by `finish()`. Also `now`, `mid()`,
+  `last_mid` and `trade_flow_since`. Initial agent decisions are scheduled
+  at construction.
+- `hawkes.OnlineHawkes` keeps a thinning candidate that falls beyond a
+  deadline, rather than discarding it, so advancing in steps reproduces one
+  uninterrupted run exactly. An external `excite` still discards it,
+  because the intensity jumped above its bound. Found by
+  `test_simulator_can_advance_in_steps_and_matches_a_single_run`.
+- `env.py`: `MarketMakingEnv` with 16 offset actions, a 10-feature
+  observation, a reward of scaled ΔMTM − λ·(q/size)², an inventory cap
+  re-applied at every decision (including fill-triggered ones), and
+  `episode_metrics` (same accounting as `run_once`). Episode state lives in
+  one `_Episode` object instead of several optional fields.
+- `rl.py` (extra `rl` = PyTorch): `DQNConfig`, `ReplayBuffer`, `Policy`
+  (act/save/load), `train_dqn` (Double DQN target, Huber loss, gradient
+  clipping, linear ε decay, periodic target sync, fully seeded).
+- `evaluation.py`:
+  - `metrics_from`, shared by `run_once` and the environment.
+  - `Scenario.config(seed)`.
+  - `calibrate_avellaneda_stoikov`: σ and κ in ticks from agent-free
+    30-minute runs of the scenario.
+- CI: the lint job installs CPU PyTorch so mypy checks `rl.py`, and a new
+  `rl` job runs the PyTorch tests.
+
+### Defects found while implementing
+- `agents.estimate_fill_curve` measured each sweep against the quote at
+  the trade's own timestamp. That quote is already post-trade, so every
+  sweep appeared to stop at the touch and κ was unidentifiable. It now
+  uses the quote strictly before the trade. Regression test
+  `test_fill_depth_is_measured_against_the_quote_before_the_trade` fails
+  on the old code.
+- `test_baselines_trade_and_their_pnl_is_attributed` had given AS
+  hand-picked parameters (κ = 0.5/tick, about 4.4 ticks from mid), the
+  legacy failure in miniature. It passed earlier only by luck of the draw.
+  It now uses `calibrate_avellaneda_stoikov`, as the roadmap specifies,
+  and a test of the calibration itself was added first.
+
 ## Phase 5, market makers and PnL attribution
 
 ### Tests (written first, failing)

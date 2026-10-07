@@ -18,10 +18,13 @@ from typing import Any
 import numpy as np
 
 from microstructure.accounting import Ledger, MidPath
+from microstructure.agents import estimate_fill_curve, estimate_sigma
+from microstructure.avellaneda_stoikov import ASParams
 from microstructure.book import Depth
 from microstructure.flow import FlowMarks
 from microstructure.hawkes import HawkesParams
 from microstructure.simulator import Action, Agent, AgentFill, MarketSimulator, MarketView, SimulationConfig
+from microstructure.stylized import MarketTape
 
 
 @dataclass(frozen=True)
@@ -34,6 +37,9 @@ class Scenario:
     tick: int
     horizon: float
     latency: float = 0.0
+
+    def config(self, seed: int) -> SimulationConfig:
+        return SimulationConfig(horizon=self.horizon, tick=self.tick, seed=seed, latency=self.latency)
 
 
 @dataclass(frozen=True)
@@ -100,22 +106,8 @@ class _Recorded:
         self.agent.on_fill(fill)
 
 
-def run_once(
-    scenario: Scenario,
-    agent: Agent,
-    seed: int,
-    attribution_horizon: float = 1.0,
-    maker_fee: float = 0.0,
-    taker_fee: float = 0.0,
-) -> RunMetrics:
-    ledger = Ledger(maker_fee=maker_fee, taker_fee=taker_fee)
-    config = SimulationConfig(
-        horizon=scenario.horizon, tick=scenario.tick, seed=seed, latency=scenario.latency
-    )
-    simulator = MarketSimulator(
-        scenario.params, scenario.marks, scenario.initial_depth, config, agents=(_Recorded(agent, ledger),)
-    )
-    tape = simulator.run().tape
+def metrics_from(ledger: Ledger, tape: MarketTape, seed: int, attribution_horizon: float) -> RunMetrics:
+    """One run's metrics from its ledger and the market tape."""
     path = MidPath.from_tape(tape)
     final_mid = float(path.mids[-1])
     pnl = ledger.attribution(path, attribution_horizon, final_mid)
@@ -131,6 +123,53 @@ def run_once(
         max_abs_inventory=ledger.max_abs_inventory,
         final_inventory=ledger.inventory,
     )
+
+
+def run_once(
+    scenario: Scenario,
+    agent: Agent,
+    seed: int,
+    attribution_horizon: float = 1.0,
+    maker_fee: float = 0.0,
+    taker_fee: float = 0.0,
+) -> RunMetrics:
+    ledger = Ledger(maker_fee=maker_fee, taker_fee=taker_fee)
+    simulator = MarketSimulator(
+        scenario.params,
+        scenario.marks,
+        scenario.initial_depth,
+        scenario.config(seed),
+        agents=(_Recorded(agent, ledger),),
+    )
+    return metrics_from(ledger, simulator.run().tape, seed, attribution_horizon)
+
+
+def calibrate_avellaneda_stoikov(
+    scenario: Scenario,
+    gamma: float,
+    seeds: Iterable[int],
+    sigma_interval: float = 5.0,
+    max_ticks: int = 6,
+    calibration_horizon: float = 1800.0,
+) -> ASParams:
+    """AS parameters in ticks, estimated from agent-free runs of the scenario.
+
+    `sigma` comes from realized variance sampled every `sigma_interval`
+    seconds, and `kappa` from the decay of the fill curve
+    (`agents.estimate_fill_curve`); each is averaged over `seeds`. Sweeps
+    past the touch are rare, so the runs last `calibration_horizon`, not the
+    episode length. `gamma` is a risk preference, not a market property, so
+    it is passed in. Use seeds disjoint from the evaluation seeds.
+    """
+    sigmas, kappas = [], []
+    for seed in seeds:
+        config = SimulationConfig(horizon=calibration_horizon, tick=scenario.tick, seed=seed)
+        tape = MarketSimulator(scenario.params, scenario.marks, scenario.initial_depth, config).run().tape
+        sigmas.append(estimate_sigma(tape, scenario.tick, sigma_interval))
+        kappas.append(estimate_fill_curve(tape, scenario.tick, max_ticks)[1])
+    if not sigmas:
+        raise ValueError("no calibration seeds")
+    return ASParams(gamma=gamma, sigma=float(np.mean(sigmas)), kappa=float(np.mean(kappas)))
 
 
 @dataclass(frozen=True)

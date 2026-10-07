@@ -292,10 +292,14 @@ class OnlineHawkes:
 
     A market simulator needs the next background event *before a deadline*
     (the next agent action), and needs agent orders to excite the flow as
-    background events of the same type would. Both are valid because a
-    thinning proposal is memoryless: abandoning a candidate at a deadline and
-    re-proposing from there leaves the process's law unchanged. `simulate` is
-    this loop run to the horizon.
+    background events of the same type would. A candidate beyond the
+    deadline is kept for the next call, since its bound stays valid while
+    intensity only decays, so stopping at deadlines never changes the
+    realization: stepping in increments reproduces one uninterrupted run
+    exactly. An external `excite` raises intensity above that bound, so it
+    discards the candidate; re-proposing from there is still exact, because
+    thinning proposals are memoryless. `simulate` is this loop run to the
+    horizon.
     """
 
     def __init__(self, params: HawkesParams, rng: np.random.Generator) -> None:
@@ -304,6 +308,7 @@ class OnlineHawkes:
         self.rng = rng
         self.now = 0.0
         self._excitation = np.zeros(params.alpha.shape)
+        self._candidate: tuple[float, float] | None = None  # (time, upper bound it was drawn under)
 
     def intensity(self) -> FloatArray:
         """Current intensity of each type."""
@@ -313,22 +318,28 @@ class OnlineHawkes:
     def advance_to(self, t: float) -> None:
         if t < self.now:
             raise ValueError(f"cannot move back in time from {self.now} to {t}")
+        if self._candidate is not None and t > self._candidate[0]:
+            raise ValueError(f"advancing to {t} would skip the pending candidate at {self._candidate[0]}")
         self._excitation = _decayed(self._excitation, self.params.beta, t - self.now)
         self.now = t
 
     def excite(self, kind: int) -> None:
         """Register an event of `kind` at the current time (e.g. an agent's)."""
         self._excitation[:, :, kind] += self.params.alpha[:, :, kind]
+        self._candidate = None  # its bound no longer covers the raised intensity
 
     def next_event(self, until: float) -> tuple[float, int] | None:
         """The next background event before `until`, already registered, or
         None after advancing the clock to `until`."""
         while True:
-            upper_bound = float(self.intensity().sum())
-            candidate = self.now + self.rng.exponential(1.0 / upper_bound)
+            if self._candidate is None:
+                upper_bound = float(self.intensity().sum())
+                self._candidate = (self.now + self.rng.exponential(1.0 / upper_bound), upper_bound)
+            candidate, upper_bound = self._candidate
             if candidate >= until:
                 self.advance_to(until)
                 return None
+            self._candidate = None
             self.advance_to(candidate)
             intensity = self.intensity()
             total = float(intensity.sum())

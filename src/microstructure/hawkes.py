@@ -281,3 +281,55 @@ def log_likelihood(stream: EventStream, params: HawkesParams) -> float:
     tails = compensator_tails(stream, params.n_types, params.beta)
     compensator = params.mu.sum() * stream.horizon + float((params.alpha * tails).sum())
     return float(total - compensator)
+
+
+class OnlineHawkes:
+    """Ogata thinning one event at a time, for simulators that interleave the
+    background flow with other activity.
+
+    `simulate` produces a whole stream up front. A market simulator instead
+    needs the next background event *before a deadline* (the next agent
+    action), and needs agent orders to excite the flow as background events
+    of the same type would. Both are valid because a thinning proposal is
+    memoryless: abandoning a candidate at a deadline and re-proposing from
+    there leaves the process's law unchanged.
+    """
+
+    def __init__(self, params: HawkesParams, rng: np.random.Generator) -> None:
+        params._require_stationary()
+        self.params = params
+        self.rng = rng
+        self.now = 0.0
+        self._excitation = np.zeros((params.n_types, params.n_types))
+
+    def intensity(self) -> FloatArray:
+        """Current intensity of each type."""
+        intensity: FloatArray = self.params.mu + self._excitation.sum(axis=1)
+        return intensity
+
+    def advance_to(self, t: float) -> None:
+        if t < self.now:
+            raise ValueError(f"cannot move back in time from {self.now} to {t}")
+        self._excitation = _decayed(self._excitation, self.params.beta, t - self.now)
+        self.now = t
+
+    def excite(self, kind: int) -> None:
+        """Register an event of `kind` at the current time (e.g. an agent's)."""
+        self._excitation[:, kind] += self.params.alpha[:, kind]
+
+    def next_event(self, until: float) -> tuple[float, int] | None:
+        """The next background event before `until`, already registered, or
+        None after advancing the clock to `until`."""
+        while True:
+            upper_bound = float(self.intensity().sum())
+            candidate = self.now + self.rng.exponential(1.0 / upper_bound)
+            if candidate >= until:
+                self.advance_to(until)
+                return None
+            self.advance_to(candidate)
+            intensity = self.intensity()
+            total = float(intensity.sum())
+            if self.rng.uniform() * upper_bound <= total:
+                kind = int(self.rng.choice(self.params.n_types, p=intensity / total))
+                self.excite(kind)
+                return self.now, kind

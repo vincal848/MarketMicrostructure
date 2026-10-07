@@ -4,6 +4,10 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pytest
+
+from microstructure.book import Side
+from microstructure.flow import FlowMarks, FlowType
+from microstructure.hawkes import HawkesParams
 from microstructure.simulator import (
     Agent,
     AgentFill,
@@ -13,10 +17,6 @@ from microstructure.simulator import (
     SendMarketOrder,
     SimulationConfig,
 )
-
-from microstructure.book import Side
-from microstructure.flow import FlowMarks, FlowType
-from microstructure.hawkes import HawkesParams
 
 TICK = 100
 MID = 1_000_000  # $100.00 in 1/10000 dollars
@@ -132,7 +132,7 @@ def test_background_cancels_never_touch_agent_orders() -> None:
     simulator = _simulator(horizon=600.0, agents=(agent,))
     simulator.run()
     resting = simulator.agent_orders(0)
-    assert sorted((o.side, o.qty) for o in resting) == [(Side.BID, 7), (Side.ASK, 9)]
+    assert {(o.side, o.qty) for o in resting} == {(Side.BID, 7), (Side.ASK, 9)}
     assert agent.fills == []
 
 

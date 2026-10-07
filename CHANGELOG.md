@@ -35,6 +35,32 @@ that define it, then the implementation that makes them pass.
   - `record_tape` from replayed events: quotes recorded only when both
     sides exist; trades signed by aggressor or by mid for hidden trades.
 
+### Implementation
+- `hawkes.OnlineHawkes`: event-at-a-time thinning with `advance_to`,
+  `excite` and `next_event(until)`. Valid because thinning proposals are
+  memoryless at a deadline.
+- `simulator.py`: `MarketSimulator`.
+  - Background Hawkes events map to book operations with sampled marks.
+  - Background cancels select only background orders.
+  - Agents follow an `Agent` protocol (`decide`, `on_fill`,
+    `decision_interval`) and get a `MarketView` that includes their own
+    queue positions.
+  - Actions are `Quote` (identical orders kept, so queue priority holds)
+    and `SendMarketOrder` (excites the flow). Order arrival is delayed by
+    the latency; agents are woken on their own fills.
+  - The result is a frozen `SimulationResult` with the tape, the applied
+    flow, generated and skipped counts, and the order log.
+- `stylized.py`: `MarketTape`, `record_tape` (real data), spread
+  distribution, trade-sign ACF, signature plot, total variation, and a
+  `summarize` JSON summary.
+- Test changes made during implementation:
+  - `test_background_cancels_never_touch_agent_orders` compares sets:
+    `Side` is a `StrEnum`, so sorting put "ask" before "bid" and the
+    expected list order was wrong.
+- Design fix: the simulator first built a placeholder `SimulationResult`
+  at construction. It now keeps counters and builds the immutable result
+  once, in `_finish`.
+
 ## Phase 3, event classification and calibration
 
 ### Tests (written first, failing)

@@ -106,7 +106,7 @@ def test_external_excitation_raises_intensity_by_alpha() -> None:
     online.advance_to(5.0)
     before = online.intensity()
     online.excite(1)
-    np.testing.assert_allclose(online.intensity() - before, params.alpha[:, 1])
+    np.testing.assert_allclose(online.intensity() - before, params.alpha[:, :, 1].sum(axis=0))
 
 
 def test_next_event_stops_at_the_requested_time() -> None:

@@ -1,20 +1,26 @@
 """Maximum-likelihood estimation and goodness of fit for exponential Hawkes
 processes.
 
-With the decay fixed, the log-likelihood is concave in (mu, alpha) and
-separates by target type: target i's terms involve only (mu_i, alpha_i.) and
-the events of type i. Writing x_k = (1, G[k, :]) for the kernel sums at the
-k-th type-i event and b = (T, tails[i, :]) for the compensator coefficients,
-target i contributes
+With the decays fixed, the log-likelihood is concave in (mu, alpha) and
+separates by target type: target i's terms involve only (mu_i, alpha_.i.)
+and the events of type i. Writing x_k = (1, G[k, :, :]) for the kernel sums
+at the k-th type-i event (one column per component and source type) and
+b = (T, tails[:, i, :]) for the compensator coefficients, target i
+contributes
 
     f(theta) = sum_k log(x_k . theta) - b . theta,     theta = (mu_i, alpha_i.) >= 0
 
 which L-BFGS-B maximizes with its exact gradient X^T (1/lambda) - b. The
-observed information X^T diag(1/lambda^2) X gives standard errors. A shared
-decay is then chosen by maximizing that profile likelihood -- the approach of
-the `tick` library's HawkesExpKern. Jointly optimizing every beta_ij instead
-is non-convex and poorly identified, so the fitter supports one shared decay;
-`HawkesParams` itself stays general.
+observed information X^T diag(1/lambda^2) X gives standard errors.
+
+Decays are therefore fixed, never jointly optimized with alpha (that problem
+is non-convex and poorly identified). Two ways to choose them:
+
+- `fit(stream, K, decay=[d_1, ..., d_U])`: a log-spaced grid of components
+  shared by every pair (the `tick` library's HawkesSumExpKern), which is how
+  multi-timescale real flow is fitted;
+- `fit_decay`: one shared decay chosen by maximizing the profile likelihood
+  (`tick`'s HawkesExpKern with a decay search).
 
 Goodness of fit uses the time-rescaling theorem (Brown et al. 2002): under
 the true model, compensator increments between consecutive events of each
@@ -23,6 +29,7 @@ type are i.i.d. Exp(1).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -107,34 +114,45 @@ def _maximize_target(design: FloatArray, linear: FloatArray) -> tuple[FloatArray
     return theta, std_errors, -float(result.fun)
 
 
-def _shared_decay(decay: float, n_types: int) -> FloatArray:
-    if not decay > 0:
-        raise ValueError(f"decay must be positive, got {decay!r}")
-    return np.full((n_types, n_types), float(decay))
+def _decay_grid(decay: float | Sequence[float], n_types: int) -> FloatArray:
+    """(U, K, K) decays: component u has decay[u] for every pair."""
+    decays = np.atleast_1d(np.asarray(decay, dtype=np.float64))
+    if decays.ndim != 1 or decays.size == 0 or np.any(decays <= 0):
+        raise ValueError(f"decay must be a positive number or non-empty list of them, got {decay!r}")
+    if np.unique(decays).size != decays.size:
+        raise ValueError(f"decays must be distinct, got {decay!r}")
+    grid: FloatArray = np.broadcast_to(decays[:, None, None], (decays.size, n_types, n_types)).copy()
+    return grid
 
 
 def _fit_with_decay(stream: EventStream, n_types: int, beta: FloatArray) -> HawkesFit:
+    n_components = beta.shape[0]
     mu, mu_se = np.zeros(n_types), np.zeros(n_types)
-    alpha, alpha_se = np.zeros((n_types, n_types)), np.zeros((n_types, n_types))
+    alpha, alpha_se = np.zeros(beta.shape), np.zeros(beta.shape)
     tails = compensator_tails(stream, n_types, beta)
     total = 0.0
     for i, target in enumerate(target_sums(stream, n_types, beta)):
         n_i = target.times.shape[0]
         if n_i == 0:
-            continue  # no events of type i: mu_i = alpha_i. = 0 is the maximizer
-        design = np.hstack([np.ones((n_i, 1)), target.kernel])
-        linear = np.concatenate([[stream.horizon], tails[i]])
+            continue  # no events of type i: mu_i = alpha_.i. = 0 is the maximizer
+        design = np.hstack([np.ones((n_i, 1)), target.kernel.reshape(n_i, -1)])
+        linear = np.concatenate([[stream.horizon], tails[:, i, :].ravel()])
         theta, std_errors, value = _maximize_target(design, linear)
-        mu[i], alpha[i] = theta[0], theta[1:]
-        mu_se[i], alpha_se[i] = std_errors[0], std_errors[1:]
+        mu[i], alpha[:, i, :] = theta[0], theta[1:].reshape(n_components, n_types)
+        mu_se[i], alpha_se[:, i, :] = std_errors[0], std_errors[1:].reshape(n_components, n_types)
         total += value
-    return HawkesFit(HawkesParams(mu, alpha, beta), mu_se, alpha_se, None, total, n_types + n_types**2)
+    n_params = n_types + n_components * n_types**2
+    return HawkesFit(HawkesParams(mu, alpha, beta), mu_se, alpha_se, None, total, n_params)
 
 
-def fit(stream: EventStream, n_types: int, decay: float) -> HawkesFit:
-    """Maximum-likelihood (mu, alpha) with every kernel decay fixed at `decay`."""
+def fit(stream: EventStream, n_types: int, decay: float | Sequence[float]) -> HawkesFit:
+    """Maximum-likelihood (mu, alpha) with fixed decays.
+
+    A single `decay` gives one exponential per kernel; a list gives one
+    component per decay, shared by every (i, j) pair.
+    """
     require_types_within(stream, n_types)
-    return _fit_with_decay(stream, n_types, _shared_decay(decay, n_types))
+    return _fit_with_decay(stream, n_types, _decay_grid(decay, n_types))
 
 
 def fit_decay(stream: EventStream, n_types: int, bounds: tuple[float, float]) -> HawkesFit:
@@ -149,7 +167,7 @@ def fit_decay(stream: EventStream, n_types: int, bounds: tuple[float, float]) ->
         raise ValueError(f"decay bounds must satisfy 0 < low < high, got {bounds!r}")
 
     def profile(decay: float) -> float:
-        return _fit_with_decay(stream, n_types, _shared_decay(decay, n_types)).log_likelihood
+        return _fit_with_decay(stream, n_types, _decay_grid(decay, n_types)).log_likelihood
 
     search = minimize_scalar(
         lambda log_decay: -profile(float(np.exp(log_decay))),
@@ -158,7 +176,7 @@ def fit_decay(stream: EventStream, n_types: int, bounds: tuple[float, float]) ->
         options={"xatol": 1e-5},
     )
     decay = float(np.exp(search.x))
-    best = _fit_with_decay(stream, n_types, _shared_decay(decay, n_types))
+    best = _fit_with_decay(stream, n_types, _decay_grid(decay, n_types))
     step = 1e-3 * decay
     curvature = (profile(decay + step) - 2.0 * best.log_likelihood + profile(decay - step)) / step**2
     decay_se = float(1.0 / np.sqrt(-curvature)) if curvature < 0 else float("nan")
@@ -184,12 +202,14 @@ def rescaled_residuals(stream: EventStream, params: HawkesParams) -> list[FloatA
     """Per type, the compensator increments between consecutive events.
 
     The compensator of type i at time t is
-    mu_i t + sum_j (alpha_ij / beta_ij) (N_j(t) - G_ij(t)), where N_j counts
-    earlier type-j events.
+    mu_i t + sum_u sum_j (alpha_uij / beta_uij) (N_j(t) - G_uij(t)), where N_j
+    counts earlier type-j events.
     """
     residuals = []
+    weights = params.alpha / params.beta
     for i, target in enumerate(target_sums(stream, params.n_types, params.beta)):
-        excited = (target.counts_before - target.kernel) @ params.branching_matrix[i]
+        not_yet_decayed = target.counts_before[:, np.newaxis, :] - target.kernel
+        excited = np.einsum("nuj,uj->n", not_yet_decayed, weights[:, i, :])
         compensator = params.mu[i] * target.times + excited
         residuals.append(np.diff(compensator, prepend=0.0))
     return residuals

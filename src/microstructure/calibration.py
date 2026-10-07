@@ -7,8 +7,12 @@ calibration fits short windows (30 minutes by default) inside the continuous
 session, excluding the first and last 30 minutes, and reports how stable the
 fit is across windows instead of pretending one fit describes the day.
 
-Each window is fitted twice, as Hawkes (one shared decay, profiled) and as
-homogeneous Poisson. For each fit the report gives:
+Each window is fitted twice, as Hawkes and as homogeneous Poisson. The
+Hawkes kernel is either one exponential whose decay is profiled
+(`ProfiledDecay`), or a sum of exponentials on a fixed log-spaced grid of
+decays (`DecayGrid`). Real flow needs the grid: with a single exponential,
+the fitted decay runs to its search bound (docs/RESULTS.md, M3). For each fit
+the report gives:
 - the AIC improvement of Hawkes over Poisson;
 - the branching ratio (spectral radius of alpha / beta), the share of events
   triggered endogenously by earlier events;
@@ -24,6 +28,7 @@ relative to Poisson.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,6 +37,7 @@ from microstructure.hawkes import IntArray
 from microstructure.hawkes_estimation import (
     HawkesFit,
     KSTest,
+    fit,
     fit_decay,
     fit_poisson,
     ks_exponential,
@@ -39,6 +45,24 @@ from microstructure.hawkes_estimation import (
 )
 
 NS_PER_MINUTE = 60 * 1_000_000_000
+
+
+@dataclass(frozen=True)
+class ProfiledDecay:
+    """One exponential per kernel; its shared decay maximizes the profile
+    likelihood within `bounds` (per second)."""
+
+    bounds: tuple[float, float]
+
+
+@dataclass(frozen=True)
+class DecayGrid:
+    """A sum of exponentials per kernel, one component per fixed decay."""
+
+    decays: Sequence[float]
+
+
+KernelSpec = ProfiledDecay | DecayGrid
 
 
 @dataclass(frozen=True)
@@ -71,7 +95,7 @@ class WindowFit:
             "end_ns": self.end_ns,
             "types": [kind.name for kind in FlowType],
             "counts": [int(c) for c in self.counts],
-            "decay": float(params.beta[0, 0]),
+            "decays": params.beta[:, 0, 0].tolist(),
             "decay_se": self.hawkes.decay_se,
             "branching_ratio": self.branching_ratio,
             "aic_improvement": self.aic_improvement,
@@ -94,12 +118,14 @@ def session_windows(start_ns: int, end_ns: int, minutes: int) -> list[tuple[int,
     return [(t, t + step) for t in range(start_ns, end_ns - step + 1, step)]
 
 
-def calibrate_window(
-    flow: ClassifiedFlow, start_ns: int, end_ns: int, decay_bounds: tuple[float, float]
-) -> WindowFit:
-    """Fit Hawkes and Poisson to the flow in [start_ns, end_ns)."""
+def calibrate_window(flow: ClassifiedFlow, start_ns: int, end_ns: int, kernel: KernelSpec) -> WindowFit:
+    """Fit Hawkes (with the given kernel) and Poisson to the flow in [start_ns, end_ns)."""
     stream = flow.to_stream(start_ns, end_ns)
-    hawkes = fit_decay(stream, N_FLOW_TYPES, decay_bounds)
+    match kernel:
+        case ProfiledDecay(bounds=bounds):
+            hawkes = fit_decay(stream, N_FLOW_TYPES, bounds)
+        case DecayGrid(decays=decays):
+            hawkes = fit(stream, N_FLOW_TYPES, list(decays))
     poisson = fit_poisson(stream, N_FLOW_TYPES)
     return WindowFit(
         start_ns=start_ns,

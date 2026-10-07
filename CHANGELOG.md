@@ -26,6 +26,32 @@ span microseconds to seconds.
   - Residuals under the true two-scale model pass KS.
   - Online excitation adds every component's jump.
 
+### Implementation
+- `hawkes.py`: `HawkesParams` stores `alpha`/`beta` as (U, K, K), promoting
+  (K, K) input, and adds `n_components`; the branching matrix sums the
+  components. Kernel sums are (n_i, U, K), compensator tails (U, K, K), and
+  the likelihood uses einsum. `simulate` is now a loop over `OnlineHawkes`
+  rather than a second copy of the thinning algorithm.
+- `hawkes_estimation.py`: `fit(stream, K, decay=[d_1, ..., d_U])` fits one
+  component per decay (concave, n_params = K + U·K²); residuals sum over
+  components; `fit_decay` is unchanged for a single profiled decay.
+- `calibration.py`: kernel specs `ProfiledDecay(bounds)` and
+  `DecayGrid(decays)`; summaries report `decays`.
+- `cli.py`: `--decays` (default 1e5, 1e4, 1e3, 100, 10, 1 per second) and
+  `--single-decay` for the old profiled fit.
+- Test changes made during implementation:
+  - Updated to (U, K, K) indexing: the naive oracle in
+    `test_hawkes_estimation.py`, the excitation assertion in
+    `test_hawkes.py`, and `beta[0, 0, 0]` in the decay assertions.
+  - `calibrate_window` now takes a kernel spec instead of `decay_bounds`;
+    the summary key `decay` became `decays`; added a decay-grid
+    calibration test.
+  - The two-scale test process was made less critical (spectral radius
+    0.86 → 0.72). With seed 21 the old process ran 11.5% below its
+    stationary rate. Over 12 seeds the mean rate was 2.877 against 2.889
+    theoretical, so the simulator is unbiased and the tolerance was the
+    problem: about 2.6σ at the old criticality, about 4σ at the new one.
+
 ## Phase 4, generative simulator
 
 ### Tests (written first, failing)

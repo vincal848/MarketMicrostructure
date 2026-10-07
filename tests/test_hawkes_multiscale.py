@@ -18,7 +18,7 @@ FAST, SLOW = 50.0, 0.5
 
 TWO_SCALE = HawkesParams(
     mu=[0.4, 0.3],
-    alpha=[[[20.0, 5.0], [10.0, 15.0]], [[0.15, 0.05], [0.05, 0.1]]],
+    alpha=[[[20.0, 5.0], [10.0, 15.0]], [[0.1, 0.025], [0.025, 0.05]]],
     beta=[[[FAST, FAST], [FAST, FAST]], [[SLOW, SLOW], [SLOW, SLOW]]],
 )
 
@@ -29,7 +29,10 @@ def _naive_log_likelihood(stream: EventStream, params: HawkesParams) -> float:
     for idx in range(len(t)):
         lam = params.mu[k[idx]]
         for prev in range(idx):
-            lam += np.sum(params.alpha[:, k[idx], k[prev]] * np.exp(-params.beta[:, k[idx], k[prev]] * (t[idx] - t[prev])))
+            lam += np.sum(
+                params.alpha[:, k[idx], k[prev]]
+                * np.exp(-params.beta[:, k[idx], k[prev]] * (t[idx] - t[prev]))
+            )
         total += np.log(lam)
     compensator = params.mu.sum() * stream.horizon
     for idx in range(len(t)):
@@ -48,7 +51,12 @@ def test_params_store_components_and_promote_single_kernels() -> None:
     assert single.alpha.shape == single.beta.shape == (1, 1, 1)
     assert single.n_components == 1
     assert TWO_SCALE.n_components == 2
-    expected = np.array([[20 / FAST + 0.15 / SLOW, 5 / FAST + 0.05 / SLOW], [10 / FAST + 0.05 / SLOW, 15 / FAST + 0.1 / SLOW]])
+    expected = np.array(
+        [
+            [20 / FAST + 0.1 / SLOW, 5 / FAST + 0.025 / SLOW],
+            [10 / FAST + 0.025 / SLOW, 15 / FAST + 0.05 / SLOW],
+        ]
+    )
     np.testing.assert_allclose(TWO_SCALE.branching_matrix, expected)
 
 
@@ -60,7 +68,9 @@ def test_component_shapes_must_agree() -> None:
 def test_multiscale_log_likelihood_matches_the_naive_definition() -> None:
     stream = simulate(TWO_SCALE, horizon=60.0, seed=1)
     assert len(stream) > 40
-    assert log_likelihood(stream, TWO_SCALE) == pytest.approx(_naive_log_likelihood(stream, TWO_SCALE), rel=1e-9)
+    assert log_likelihood(stream, TWO_SCALE) == pytest.approx(
+        _naive_log_likelihood(stream, TWO_SCALE), rel=1e-9
+    )
 
 
 def test_simulation_rate_matches_the_stationary_intensity(two_scale_stream: EventStream) -> None:

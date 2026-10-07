@@ -1,24 +1,27 @@
-"""Multivariate Hawkes process with exponential kernels.
+"""Multivariate Hawkes process with sum-of-exponentials kernels.
 
 The intensity of event type i at time t, given the history of all K types:
 
-    lambda_i(t) = mu_i + sum_j sum_{t_k^j < t} alpha_ij * exp(-beta_ij (t - t_k^j))
+    lambda_i(t) = mu_i + sum_j sum_{t_k^j < t} sum_u alpha_uij * exp(-beta_uij (t - t_k^j))
 
-mu is the (K,) background rate; alpha and beta are (K, K) excitation and decay
-matrices: a type-j event raises type-i's intensity by alpha_ij at once,
-decaying at rate beta_ij. docs/ARCHITECTURE.md maps the K dimensions onto
-order-book event types.
+mu is the (K,) background rate; alpha and beta are (U, K, K): U exponential
+components per kernel. A type-j event raises type-i's intensity by
+sum_u alpha_uij at once, and component u decays at rate beta_uij. One
+component (U = 1) is the classical exponential Hawkes process. Several
+components with log-spaced decays let one kernel cover reactions from
+microseconds to seconds, which real order flow needs (docs/RESULTS.md, M3).
+docs/ARCHITECTURE.md maps the K dimensions onto order-book event types.
 
-The branching matrix n_ij = alpha_ij / beta_ij is the expected number of
-type-i events directly triggered by one type-j event. The process is
-stationary iff its spectral radius is < 1 (Hawkes & Oakes 1974); `simulate`
+The branching matrix n_ij = sum_u alpha_uij / beta_uij is the expected number
+of type-i events directly triggered by one type-j event. The process is
+stationary iff its spectral radius is < 1 (Hawkes & Oakes 1974); simulation
 refuses to run otherwise, since the expected event count diverges.
 
-Both the simulator and the likelihood carry the same state: an excitation
-matrix R[i, j] holding type j's decayed contribution to type i's intensity,
-so lambda(t) = mu + R(t).sum(axis=1). Exponential kernels make R Markov --
-decaying it to a new time is one elementwise multiply -- which is what keeps
-both algorithms O(n_events * K^2) instead of quadratic in events.
+Simulation and likelihood carry the same state: an excitation array
+R[u, i, j] holding component u of type j's decayed contribution to type i's
+intensity, so lambda(t) = mu + R(t).sum(axis=(0, 2)). Exponential components
+make R Markov -- decaying it to a new time is one elementwise multiply --
+which keeps both algorithms linear in the number of events.
 """
 
 from __future__ import annotations
@@ -39,12 +42,28 @@ def _frozen(values: npt.ArrayLike, dtype: type[Any]) -> Any:
     return array
 
 
+def _components(values: npt.ArrayLike, k: int) -> FloatArray:
+    """(K, K) or (U, K, K) input as a read-only (U, K, K) array."""
+    array = np.array(values, dtype=np.float64)
+    if array.ndim == 2:
+        array = array[np.newaxis]
+    if array.ndim != 3 or array.shape[1:] != (k, k) or array.shape[0] < 1:
+        raise ValueError(
+            f"alpha and beta must have shape {(k, k)} or (U, {k}, {k}) to match mu, got {array.shape}"
+        )
+    array.setflags(write=False)
+    return array
+
+
 @dataclass(frozen=True)
 class HawkesParams:
-    """Validated (mu, alpha, beta) for a K-type exponential Hawkes process.
+    """Validated (mu, alpha, beta) for a K-type Hawkes process with U
+    exponential components per kernel.
 
-    Arrays are copied and made read-only on construction, so a params object
-    cannot change after the checks below have passed.
+    `alpha` and `beta` may be given as (K, K), which means U = 1, or as
+    (U, K, K); they are always stored as (U, K, K). Arrays are copied and made
+    read-only on construction, so a params object cannot change after the
+    checks below have passed.
     """
 
     mu: FloatArray
@@ -53,14 +72,12 @@ class HawkesParams:
 
     def __init__(self, mu: npt.ArrayLike, alpha: npt.ArrayLike, beta: npt.ArrayLike) -> None:
         mu_arr = _frozen(mu, np.float64)
-        alpha_arr = _frozen(alpha, np.float64)
-        beta_arr = _frozen(beta, np.float64)
         k = mu_arr.shape[0] if mu_arr.ndim == 1 else -1
         if k < 1:
             raise ValueError(f"mu must be a non-empty 1-D array, got shape {mu_arr.shape}")
-        for name, matrix in (("alpha", alpha_arr), ("beta", beta_arr)):
-            if matrix.shape != (k, k):
-                raise ValueError(f"{name} must have shape {(k, k)} to match mu, got {matrix.shape}")
+        alpha_arr, beta_arr = _components(alpha, k), _components(beta, k)
+        if alpha_arr.shape != beta_arr.shape:
+            raise ValueError(f"alpha and beta shapes differ: {alpha_arr.shape} vs {beta_arr.shape}")
         if np.any(mu_arr < 0) or not np.any(mu_arr > 0):
             raise ValueError("mu must be non-negative with at least one positive rate")
         if np.any(alpha_arr < 0):
@@ -76,8 +93,12 @@ class HawkesParams:
         return int(self.mu.shape[0])
 
     @property
+    def n_components(self) -> int:
+        return int(self.alpha.shape[0])
+
+    @property
     def branching_matrix(self) -> FloatArray:
-        branching: FloatArray = self.alpha / self.beta
+        branching: FloatArray = (self.alpha / self.beta).sum(axis=0)
         return branching
 
     def spectral_radius(self) -> float:
@@ -142,43 +163,16 @@ def _decayed(excitation: FloatArray, beta: FloatArray, elapsed: float) -> FloatA
 
 
 def simulate(params: HawkesParams, horizon: float, seed: int | None = None) -> EventStream:
-    """Simulate one realization on [0, horizon] by Ogata's (1981) thinning.
-
-    With decaying exponential kernels the total intensity is highest right
-    after an event and falls until the next one, so the current total
-    intensity is a valid upper bound for a thinning proposal. Draw a candidate
-    time at that rate; accept it as a type-k event with probability
-    lambda_k(candidate) / bound, otherwise keep the candidate time (where the
-    intensity is lower, so the next bound is tighter) and try again.
-    """
-    params._require_stationary()
+    """Simulate one realization on [0, horizon] by Ogata's (1981) thinning
+    (see `OnlineHawkes`)."""
     if horizon <= 0:
         raise ValueError(f"horizon must be positive, got {horizon!r}")
-
-    rng = np.random.default_rng(seed)
-    excitation = np.zeros((params.n_types, params.n_types))
-    last_event_t = 0.0
-    t = 0.0
+    online = OnlineHawkes(params, np.random.default_rng(seed))
     times: list[float] = []
     types: list[int] = []
-
-    while True:
-        excitation_now = _decayed(excitation, params.beta, t - last_event_t)
-        upper_bound = float((params.mu + excitation_now.sum(axis=1)).sum())
-        t += rng.exponential(1.0 / upper_bound)
-        if t >= horizon:
-            break
-        excitation_at_t = _decayed(excitation, params.beta, t - last_event_t)
-        intensity = params.mu + excitation_at_t.sum(axis=1)
-        total = float(intensity.sum())
-        if rng.uniform() * upper_bound <= total:
-            k = int(rng.choice(params.n_types, p=intensity / total))
-            times.append(t)
-            types.append(k)
-            excitation = excitation_at_t
-            excitation[:, k] += params.alpha[:, k]
-            last_event_t = t
-
+    while (event := online.next_event(until=horizon)) is not None:
+        times.append(event[0])
+        types.append(event[1])
     return EventStream(times, types, horizon)
 
 
@@ -186,9 +180,9 @@ def simulate(params: HawkesParams, horizon: float, seed: int | None = None) -> E
 #
 # The likelihood, the estimators and the goodness-of-fit residuals all need,
 # at each event k of a target type i, the kernel sum over earlier events of
-# each source type j:
+# each source type j, for each component u:
 #
-#     G[k, j] = sum_{m < k, type_m = j} exp(-beta_ij (t_k - t_m))
+#     G[k, u, j] = sum_{m < k, type_m = j} exp(-beta_uij (t_k - t_m))
 #
 # It obeys G_k = exp(-beta dt) (G_{k-1} + [type_{k-1} = j]), evaluated here
 # with cumulative sums instead of a Python loop: inside a block starting at
@@ -223,12 +217,12 @@ class TargetSums:
     """Kernel sums and prior event counts at every event of one target type."""
 
     times: FloatArray  # (n_i,) times of the target type's events
-    kernel: FloatArray  # (n_i, K) G[k, j]
+    kernel: FloatArray  # (n_i, U, K) G[k, u, j]
     counts_before: FloatArray  # (n_i, K) number of earlier type-j events
 
 
 def target_sums(stream: EventStream, n_types: int, beta: FloatArray) -> list[TargetSums]:
-    """`TargetSums` for each target type 0 .. n_types-1 under decays `beta`."""
+    """`TargetSums` for each target type 0 .. n_types-1 under (U, K, K) decays."""
     require_types_within(stream, n_types)
     one_hot = np.stack([(stream.types == j).astype(np.float64) for j in range(n_types)], axis=1)
     counts_before = np.cumsum(one_hot, axis=0) - one_hot
@@ -236,26 +230,29 @@ def target_sums(stream: EventStream, n_types: int, beta: FloatArray) -> list[Tar
     targets = []
     for i in range(n_types):
         at_i = stream.types == i
-        columns = []
-        for j in range(n_types):
-            key = (j, float(beta[i, j]))
-            if key not in by_source_and_decay:
-                by_source_and_decay[key] = _kernel_sum(stream.times, one_hot[:, j], key[1])
-            columns.append(by_source_and_decay[key][at_i])
-        targets.append(TargetSums(stream.times[at_i], np.stack(columns, axis=1), counts_before[at_i]))
+        kernel = np.empty((int(at_i.sum()), beta.shape[0], n_types))
+        for u in range(beta.shape[0]):
+            for j in range(n_types):
+                key = (j, float(beta[u, i, j]))
+                if key not in by_source_and_decay:
+                    by_source_and_decay[key] = _kernel_sum(stream.times, one_hot[:, j], key[1])
+                kernel[:, u, j] = by_source_and_decay[key][at_i]
+        targets.append(TargetSums(stream.times[at_i], kernel, counts_before[at_i]))
     return targets
 
 
 def compensator_tails(stream: EventStream, n_types: int, beta: FloatArray) -> FloatArray:
-    """tails[i, j] = sum over type-j events s of (1 - exp(-beta_ij (T - s))) / beta_ij.
+    """tails[u, i, j] = sum over type-j events s of (1 - exp(-beta_uij (T - s))) / beta_uij.
 
-    alpha_ij * tails[i, j] is type j's total contribution to type i's
-    compensator over [0, T].
+    alpha_uij * tails[u, i, j] is component u of type j's total contribution
+    to type i's compensator over [0, T].
     """
-    tails = np.zeros((n_types, n_types))
+    tails = np.zeros(beta.shape)
     for j in range(n_types):
         remaining = stream.horizon - stream.times[stream.types == j]
-        tails[:, j] = (1.0 - np.exp(-np.outer(beta[:, j], remaining))).sum(axis=1) / beta[:, j]
+        for u in range(beta.shape[0]):
+            decay = beta[u, :, j]
+            tails[u, :, j] = (1.0 - np.exp(-np.outer(decay, remaining))).sum(axis=1) / decay
     return tails
 
 
@@ -274,7 +271,7 @@ def log_likelihood(stream: EventStream, params: HawkesParams) -> float:
     """
     total = 0.0
     for i, target in enumerate(target_sums(stream, params.n_types, params.beta)):
-        intensity = params.mu[i] + target.kernel @ params.alpha[i]
+        intensity = params.mu[i] + np.einsum("nuj,uj->n", target.kernel, params.alpha[:, i, :])
         if np.any(intensity <= 0):
             return float("-inf")
         total += float(np.log(intensity).sum())
@@ -287,12 +284,18 @@ class OnlineHawkes:
     """Ogata thinning one event at a time, for simulators that interleave the
     background flow with other activity.
 
-    `simulate` produces a whole stream up front. A market simulator instead
-    needs the next background event *before a deadline* (the next agent
-    action), and needs agent orders to excite the flow as background events
-    of the same type would. Both are valid because a thinning proposal is
-    memoryless: abandoning a candidate at a deadline and re-proposing from
-    there leaves the process's law unchanged.
+    Between events every exponential component decays, so the current total
+    intensity bounds the intensity until the next event. Draw a candidate at
+    that rate; accept it as a type-k event with probability
+    lambda_k(candidate) / bound, otherwise keep the candidate time (where the
+    bound is tighter) and try again.
+
+    A market simulator needs the next background event *before a deadline*
+    (the next agent action), and needs agent orders to excite the flow as
+    background events of the same type would. Both are valid because a
+    thinning proposal is memoryless: abandoning a candidate at a deadline and
+    re-proposing from there leaves the process's law unchanged. `simulate` is
+    this loop run to the horizon.
     """
 
     def __init__(self, params: HawkesParams, rng: np.random.Generator) -> None:
@@ -300,11 +303,11 @@ class OnlineHawkes:
         self.params = params
         self.rng = rng
         self.now = 0.0
-        self._excitation = np.zeros((params.n_types, params.n_types))
+        self._excitation = np.zeros(params.alpha.shape)
 
     def intensity(self) -> FloatArray:
         """Current intensity of each type."""
-        intensity: FloatArray = self.params.mu + self._excitation.sum(axis=1)
+        intensity: FloatArray = self.params.mu + self._excitation.sum(axis=(0, 2))
         return intensity
 
     def advance_to(self, t: float) -> None:
@@ -315,7 +318,7 @@ class OnlineHawkes:
 
     def excite(self, kind: int) -> None:
         """Register an event of `kind` at the current time (e.g. an agent's)."""
-        self._excitation[:, kind] += self.params.alpha[:, kind]
+        self._excitation[:, :, kind] += self.params.alpha[:, :, kind]
 
     def next_event(self, until: float) -> tuple[float, int] | None:
         """The next background event before `until`, already registered, or

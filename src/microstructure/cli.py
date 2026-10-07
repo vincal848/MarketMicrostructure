@@ -19,7 +19,7 @@ from typing import Any
 import numpy as np
 
 from microstructure.book import Depth
-from microstructure.calibration import calibrate_window, session_windows
+from microstructure.calibration import DecayGrid, KernelSpec, ProfiledDecay, calibrate_window, session_windows
 from microstructure.databento import read_mbp10
 from microstructure.flow import ClassifiedFlow, classify, marks
 from microstructure.itch import read_itch
@@ -71,23 +71,31 @@ def _replay_itch(args: argparse.Namespace) -> int:
     return 0 if report.is_clean() else 1
 
 
+def _kernel(args: argparse.Namespace) -> KernelSpec:
+    if args.single_decay:
+        return ProfiledDecay((args.decay_min, args.decay_max))
+    return DecayGrid(tuple(float(d) for d in args.decays.split(",")))
+
+
 def _calibrate(flow: ClassifiedFlow, args: argparse.Namespace, header: dict[str, Any]) -> int:
     start, end = _clock(args.start), _clock(args.end)
     session = flow.between(start, end)
+    kernel = _kernel(args)
     fits = []
     for window_start, window_end in session_windows(start, end, args.minutes):
-        fit = calibrate_window(flow, window_start, window_end, (args.decay_min, args.decay_max))
+        fit = calibrate_window(flow, window_start, window_end, kernel)
         log.info(
-            "window %s: %d events, decay %.2f/s, branching %.3f, AIC gain %.0f",
+            "window %s: %d events, decays %s/s, branching %.3f, AIC gain %.0f",
             window_start // NS_PER_MINUTE,
             fit.n_events,
-            fit.hawkes.params.beta[0, 0],
+            fit.hawkes.params.beta[:, 0, 0].tolist(),
             fit.branching_ratio,
             fit.aic_improvement,
         )
         fits.append(fit.summary())
 
     result = header | {
+        "kernel": repr(kernel),
         "session": [args.start, args.end],
         "window_minutes": args.minutes,
         "classified_events_in_session": len(session),
@@ -124,8 +132,16 @@ def _add_calibration_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--end", default="15:30", help="session end, HH:MM local exchange time")
     command.add_argument("--minutes", type=int, default=30, help="window length")
     command.add_argument("--tick", type=int, default=100, help="tick size in 1/10000 dollars")
-    command.add_argument("--decay-min", type=float, default=0.1, help="lower bound on the decay (1/s)")
-    command.add_argument("--decay-max", type=float, default=5000.0, help="upper bound on the decay (1/s)")
+    command.add_argument(
+        "--decays",
+        default="100000,10000,1000,100,10,1",
+        help="comma-separated decay grid (1/s): one exponential component per decay",
+    )
+    command.add_argument(
+        "--single-decay", action="store_true", help="instead fit one exponential, profiling its decay"
+    )
+    command.add_argument("--decay-min", type=float, default=0.1, help="--single-decay lower bound (1/s)")
+    command.add_argument("--decay-max", type=float, default=5000.0, help="--single-decay upper bound (1/s)")
     command.add_argument("--out", type=Path, required=True, help="where to write the JSON results")
     command.add_argument("--marks-out", type=Path, default=None, help="optional .npz of session mark samples")
 

@@ -6,7 +6,7 @@ from itertools import pairwise
 import numpy as np
 import pytest
 
-from microstructure.calibration import calibrate_window, session_windows
+from microstructure.calibration import DecayGrid, ProfiledDecay, calibrate_window, session_windows
 from microstructure.flow import ClassifiedFlow, FlowType
 from microstructure.hawkes import HawkesParams, simulate
 
@@ -38,11 +38,11 @@ def test_session_windows_tile_the_session() -> None:
 def test_calibration_recovers_a_known_six_type_process() -> None:
     truth = _six_type_truth()
     flow = _flow(truth, seconds=3000.0, seed=4)
-    result = calibrate_window(flow, TEN_AM, TEN_AM + 3000 * SECOND, decay_bounds=(0.5, 50.0))
+    result = calibrate_window(flow, TEN_AM, TEN_AM + 3000 * SECOND, ProfiledDecay((0.5, 50.0)))
     assert result.n_events == len(flow)
     assert list(result.counts) == list(np.bincount(flow.kind, minlength=6))
     assert result.hawkes.decay_se is not None
-    assert abs(result.hawkes.params.beta[0, 0] - 4.0) < 4 * result.hawkes.decay_se
+    assert abs(result.hawkes.params.beta[0, 0, 0] - 4.0) < 4 * result.hawkes.decay_se
     assert result.branching_ratio == pytest.approx(result.hawkes.params.spectral_radius())
     assert result.aic_improvement > 0
     assert len(result.hawkes_ks) == len(result.poisson_ks) == 6
@@ -55,7 +55,7 @@ def test_a_type_with_no_events_is_tolerated() -> None:
     sparse = ClassifiedFlow(
         ts=flow.ts[keep], kind=flow.kind[keep], qty=flow.qty[keep], distance=flow.distance[keep]
     )
-    result = calibrate_window(sparse, TEN_AM, TEN_AM + 600 * SECOND, decay_bounds=(0.5, 50.0))
+    result = calibrate_window(sparse, TEN_AM, TEN_AM + 600 * SECOND, ProfiledDecay((0.5, 50.0)))
     assert result.counts[FlowType.LI] == 0
     assert result.hawkes.params.mu[FlowType.LI] == 0.0
     assert np.isnan(result.hawkes_ks[FlowType.LI].pvalue)
@@ -63,7 +63,17 @@ def test_a_type_with_no_events_is_tolerated() -> None:
 
 def test_window_fit_summary_is_json_serializable() -> None:
     flow = _flow(_six_type_truth(), seconds=300.0, seed=6)
-    summary = calibrate_window(flow, TEN_AM, TEN_AM + 300 * SECOND, decay_bounds=(0.5, 50.0)).summary()
+    summary = calibrate_window(flow, TEN_AM, TEN_AM + 300 * SECOND, ProfiledDecay((0.5, 50.0))).summary()
     decoded = json.loads(json.dumps(summary))
     assert decoded["types"] == ["MB", "MS", "LA", "LI", "LD", "C"]
-    assert set(decoded) >= {"start_ns", "end_ns", "counts", "decay", "branching_ratio", "mu", "alpha", "ks"}
+    assert set(decoded) >= {"start_ns", "end_ns", "counts", "decays", "branching_ratio", "mu", "alpha", "ks"}
+    assert len(decoded["decays"]) == 1
+
+
+def test_a_decay_grid_fits_one_component_per_decay() -> None:
+    flow = _flow(_six_type_truth(), seconds=600.0, seed=7)
+    result = calibrate_window(flow, TEN_AM, TEN_AM + 600 * SECOND, DecayGrid((40.0, 4.0, 0.4)))
+    assert result.hawkes.params.n_components == 3
+    assert result.hawkes.decay_se is None
+    assert result.summary()["decays"] == [40.0, 4.0, 0.4]
+    assert result.aic_improvement > 0

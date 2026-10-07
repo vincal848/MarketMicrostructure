@@ -29,13 +29,13 @@ def _naive_log_likelihood(stream: EventStream, params: HawkesParams) -> float:
         lam = params.mu[i]
         for prev in range(idx):
             j = k[prev]
-            lam += params.alpha[i, j] * np.exp(-params.beta[i, j] * (t[idx] - t[prev]))
+            lam += np.sum(params.alpha[:, i, j] * np.exp(-params.beta[:, i, j] * (t[idx] - t[prev])))
         total += np.log(lam)
     compensator = params.mu.sum() * stream.horizon
     for idx in range(len(t)):
         j = k[idx]
-        tail = 1.0 - np.exp(-params.beta[:, j] * (stream.horizon - t[idx]))
-        compensator += np.sum(params.alpha[:, j] / params.beta[:, j] * tail)
+        tail = 1.0 - np.exp(-params.beta[:, :, j] * (stream.horizon - t[idx]))
+        compensator += np.sum(params.alpha[:, :, j] / params.beta[:, :, j] * tail)
     return float(total - compensator)
 
 
@@ -74,7 +74,7 @@ def test_fitted_log_likelihood_is_at_least_the_truths(stream_2d: EventStream) ->
 def test_fit_decay_recovers_the_shared_decay(stream_2d: EventStream) -> None:
     result = fit_decay(stream_2d, n_types=2, bounds=(0.1, 50.0))
     assert result.decay_se is not None
-    assert abs(result.params.beta[0, 0] - 2.0) < 4 * result.decay_se
+    assert abs(result.params.beta[0, 0, 0] - 2.0) < 4 * result.decay_se
     assert np.all(np.abs(result.params.alpha - TRUTH_2D.alpha) < 4 * result.alpha_se)
     assert result.n_params == 2 + 4 + 1
 

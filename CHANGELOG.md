@@ -31,6 +31,28 @@ that define it, then the implementation that makes them pass.
   - Both baselines trade in every seed, the legacy failure is checked
     explicitly, and every run's attribution sums to its PnL.
 
+### Implementation
+- `accounting.py`: `MidPath` (last mid at or before t), `Ledger` (cash,
+  inventory, maker/taker fees, volume, max |inventory|), and
+  `attribution` into spread capture / adverse selection at h / inventory,
+  which sums exactly to mark-to-market PnL by construction.
+- `agents.py`:
+  - `AvellanedaStoikovAgent` works in ticks, rounds outward to the grid,
+    posts only (never crosses), and has an optional inventory cap that
+    sizes orders down.
+  - `FixedSpreadAgent`.
+  - `estimate_sigma` from the signature plot. `estimate_fill_curve` fits
+    λ(δ) = A·exp(−κδ) to the rate of market orders reaching δ ticks
+    beyond the touch, which is the fill intensity AS assumes.
+- `evaluation.py`: `Scenario`, `run_once`, `evaluate` (every agent on
+  every seed, rebuilt per run), `EvaluationTable` (paired `difference`
+  and a `summary` with bootstrap CIs), `bootstrap_mean`,
+  `paired_difference`.
+- Clean-ups made during implementation: `_post_only` takes the narrowed
+  best prices instead of asserting on the view; test helpers `_price` and
+  `_size` replace compound assertions; agent factories are typed as
+  `Callable[[], Agent]`.
+
 ## Phase 3b, multi-timescale kernels
 
 Added after Phase 3's first real-data calibration. With one exponential

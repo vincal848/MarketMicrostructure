@@ -58,7 +58,7 @@ def test_components_sum_to_mark_to_market_on_random_fills() -> None:
             _fill(
                 float(times[k]),
                 side,
-                int(round(mids[k])) + offset,
+                round(mids[k]) + offset,
                 int(rng.integers(1, 300)),
                 float(mids[k]),
                 bool(rng.uniform() < 0.3),

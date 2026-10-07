@@ -1,6 +1,7 @@
 """Phase 5: market-making agents and the parameter estimators they need."""
 
 import math
+from collections.abc import Sequence
 
 import numpy as np
 import pytest
@@ -29,9 +30,20 @@ def _fill(side: Side, qty: int) -> AgentFill:
     return AgentFill(time=0.0, side=side, price=1_000_000, qty=qty, aggressive=False, mid=1_000_050.0)
 
 
-def _only_quote(actions: list[object]) -> Quote:
-    assert len(actions) == 1 and isinstance(actions[0], Quote)
+def _only_quote(actions: Sequence[object]) -> Quote:
+    assert len(actions) == 1
+    assert isinstance(actions[0], Quote)
     return actions[0]
+
+
+def _price(level: tuple[int, int] | None) -> int:
+    assert level is not None
+    return level[0]
+
+
+def _size(level: tuple[int, int] | None) -> int:
+    assert level is not None
+    return level[1]
 
 
 AS_TICKS = ASParams(gamma=0.01, sigma=2.0, kappa=0.3)  # in tick units
@@ -53,10 +65,8 @@ def test_long_inventory_lowers_both_quotes() -> None:
     long.on_fill(_fill(Side.BID, 300))
     view = _view(999_000, 1_001_000)
     flat_quote, long_quote = _only_quote(flat.decide(view)), _only_quote(long.decide(view))
-    assert long_quote.bid is not None and flat_quote.bid is not None
-    assert long_quote.ask is not None and flat_quote.ask is not None
-    assert long_quote.bid[0] < flat_quote.bid[0]
-    assert long_quote.ask[0] < flat_quote.ask[0]
+    assert _price(long_quote.bid) < _price(flat_quote.bid)
+    assert _price(long_quote.ask) < _price(flat_quote.ask)
 
 
 def test_quotes_never_cross_the_book() -> None:
@@ -67,19 +77,19 @@ def test_quotes_never_cross_the_book() -> None:
     )
     agent.on_fill(_fill(Side.BID, 5_000))
     quote = _only_quote(agent.decide(_view(1_000_000, 1_000_100)))
-    assert quote.ask is not None and quote.ask[0] >= 1_000_100
-    assert quote.bid is not None and quote.bid[0] <= 1_000_000
+    assert _price(quote.ask) >= 1_000_100
+    assert _price(quote.bid) <= 1_000_000
 
 
 def test_inventory_cap_limits_the_quoted_size() -> None:
     agent = AvellanedaStoikovAgent(AS_TICKS, tick=TICK, size=100, horizon=60.0, inventory_cap=250)
     agent.on_fill(_fill(Side.BID, 200))
     quote = _only_quote(agent.decide(_view(999_000, 1_001_000)))
-    assert quote.bid is not None and quote.bid[1] == 50  # only 50 more fits under the cap
+    assert _size(quote.bid) == 50  # only 50 more fits under the cap
     agent.on_fill(_fill(Side.BID, 50))
     quote = _only_quote(agent.decide(_view(999_000, 1_001_000)))
     assert quote.bid is None
-    assert quote.ask is not None and quote.ask[1] == 100
+    assert _size(quote.ask) == 100
 
 
 def test_inventory_tracks_fills() -> None:
@@ -135,7 +145,7 @@ def test_sigma_estimate_of_a_random_walk() -> None:
     steps = rng.choice([-TICK, TICK], size=36_000)  # one tick every 0.1 s -> variance 10 ticks^2 / s
     mid = 1_000_000 + np.cumsum(steps)
     tape = MarketTape(
-        times=np.arange(36_000) * 0.1,
+        times=np.arange(36_000, dtype=np.float64) * 0.1,
         bid=mid - TICK,
         ask=mid + TICK,
         trade_times=np.array([]),

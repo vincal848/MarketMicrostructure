@@ -1,5 +1,7 @@
 """Phase 5: paired, seeded evaluation of agents on identical simulated flow."""
 
+from collections.abc import Callable
+
 import numpy as np
 import pytest
 
@@ -8,6 +10,7 @@ from microstructure.avellaneda_stoikov import ASParams
 from microstructure.evaluation import Scenario, evaluate, paired_difference
 from microstructure.flow import FlowMarks, FlowType
 from microstructure.hawkes import HawkesParams
+from microstructure.simulator import Agent
 
 TICK = 100
 MID = 1_000_000
@@ -45,14 +48,16 @@ def test_paired_difference_interval_covers_a_known_shift() -> None:
 
 
 def test_an_agent_evaluated_against_itself_differs_by_exactly_zero() -> None:
-    make = {"fixed": lambda: FixedSpreadAgent(half_spread_ticks=1, tick=TICK, size=100)}
+    make: dict[str, Callable[[], Agent]] = {
+        "fixed": lambda: FixedSpreadAgent(half_spread_ticks=1, tick=TICK, size=100)
+    }
     table = evaluate(_scenario(), make | {"fixed again": make["fixed"]}, seeds=range(3))
     diff = table.difference("fixed again", "fixed", metric="pnl")
     assert (diff.mean, diff.low, diff.high) == (0.0, 0.0, 0.0)
 
 
 def test_baselines_trade_and_their_pnl_is_attributed() -> None:
-    agents = {
+    agents: dict[str, Callable[[], Agent]] = {
         "fixed": lambda: FixedSpreadAgent(half_spread_ticks=1, tick=TICK, size=100),
         "as": lambda: AvellanedaStoikovAgent(
             ASParams(gamma=0.01, sigma=2.0, kappa=0.5), tick=TICK, size=100, horizon=120.0

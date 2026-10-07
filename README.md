@@ -148,8 +148,15 @@ pytest tests -q
 | `lobster.py` | LOBSTER message/orderbook CSV parser |
 | `tests/` | One test file per module, plus `tests/fixtures/` for the LOBSTER parser |
 | `docs/DESIGN.md` | Event-type table and the Hawkes intensity formula |
+| `legacy/cmu_ml2_meta_dqn/` | Earlier prototype of M5: CMU ML2 Meta-DQN market maker on SPY ITCH data, with results and caveats (superseded) |
 
 ## Notes
+
+- `legacy/cmu_ml2_meta_dqn/` is an earlier RL market maker (Double DQN with
+  an LSTM that retunes reward penalties) from a CMU course project. It uses
+  a hand-set fill model rather than simulated order flow. Its README lists
+  what that setup can and cannot show, and those limits are what M4 and M5
+  are designed to fix.
 
 - No real LOBSTER data is in this repository or in CI. The parser is tested
   against a tiny fixture built by hand; M1's exact-snapshot-match milestone

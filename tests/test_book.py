@@ -154,3 +154,72 @@ def test_fractional_price_is_rejected() -> None:
     book = OrderBook()
     with pytest.raises(TypeError):
         book.add_limit_order(1, Side.BID, 100.5, 10)  # type: ignore[arg-type]
+
+
+# --- Phase 1: exchange-driven executions and queue inspection ---------------
+
+
+def test_execute_order_fills_the_named_order_wherever_it_sits() -> None:
+    book = OrderBook()
+    book.add_limit_order(1, Side.ASK, 100, 10)
+    book.add_limit_order(2, Side.ASK, 100, 10)
+    fill = book.execute_order(2, 4)
+    assert fill == Fill(price=100, qty=4, resting_order_id=2)
+    assert book.depth_snapshot(1)[1] == [(100, 16)]
+    assert book.resting_order(2).qty == 6
+
+
+def test_partial_execution_keeps_queue_priority() -> None:
+    book = OrderBook()
+    book.add_limit_order(1, Side.BID, 100, 10)
+    book.add_limit_order(2, Side.BID, 100, 10)
+    book.execute_order(1, 3)
+    assert book.queue_ahead(1) == 0
+    assert book.queue_ahead(2) == 7
+
+
+def test_full_execution_removes_the_order_and_empty_level() -> None:
+    book = OrderBook()
+    book.add_limit_order(1, Side.BID, 100, 10)
+    book.execute_order(1, 10)
+    assert 1 not in book
+    assert book.best_bid() is None
+
+
+def test_execute_order_rejects_more_than_resting_quantity() -> None:
+    book = OrderBook()
+    book.add_limit_order(1, Side.BID, 100, 10)
+    with pytest.raises(ValueError, match="exceeds"):
+        book.execute_order(1, 11)
+    assert book.resting_order(1).qty == 10
+    with pytest.raises(KeyError):
+        book.execute_order(99, 1)
+
+
+def test_queue_ahead_counts_only_older_orders_at_the_same_price() -> None:
+    book = OrderBook()
+    book.add_limit_order(1, Side.ASK, 101, 50)
+    book.add_limit_order(2, Side.ASK, 100, 10)
+    book.add_limit_order(3, Side.ASK, 100, 20)
+    book.add_limit_order(4, Side.ASK, 100, 5)
+    assert book.queue_ahead(2) == 0
+    assert book.queue_ahead(4) == 30
+    assert book.queue_ahead(1) == 0
+
+
+def test_would_cross_matches_the_matching_rule() -> None:
+    book = OrderBook()
+    book.add_limit_order(1, Side.ASK, 101, 5)
+    book.add_limit_order(2, Side.BID, 99, 5)
+    assert book.would_cross(Side.BID, 101)
+    assert not book.would_cross(Side.BID, 100)
+    assert book.would_cross(Side.ASK, 99)
+    assert not book.would_cross(Side.ASK, 100)
+
+
+def test_resting_order_returns_a_detached_copy() -> None:
+    book = OrderBook()
+    book.add_limit_order(1, Side.BID, 100, 10)
+    snapshot = book.resting_order(1)
+    snapshot.qty = 1
+    assert book.resting_order(1).qty == 10

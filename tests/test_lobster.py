@@ -10,6 +10,8 @@ from microstructure.lobster import (
     read_messages,
     read_orderbook,
     read_paired,
+    to_events,
+    depths,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -65,3 +67,35 @@ def test_read_messages_rejects_an_unknown_direction(tmp_path: Path) -> None:
     bad.write_text("34200.1,1,1,100,585000,0\n")
     with pytest.raises(ValueError, match="direction"):
         read_messages(bad)
+
+
+# --- Phase 1: LOBSTER messages -> normalized events --------------------------
+
+
+def test_to_events_maps_each_message_type() -> None:
+    from microstructure.book import Side
+    from microstructure.events import AddOrder, DeleteOrder, ExecuteOrder
+
+    events = to_events(read_messages(MESSAGES))
+    assert events[0] == AddOrder(ts=34_200_100_000_000, order_id=1, side=Side.BID, price=585000, qty=100)
+    assert events[3] == ExecuteOrder(ts=34_200_400_000_000, order_id=2, qty=50)
+    assert events[4] == DeleteOrder(ts=34_200_500_000_000, order_id=3)
+
+
+def test_to_events_maps_pre_window_orders_onto_seed_orders() -> None:
+    from microstructure.book import Side
+    from microstructure.events import CancelOrder, ExecuteOrder, seed_order_id
+
+    events = to_events(read_messages(FIXTURES / "seeded_message.csv"), first_row=1)
+    # Row 1 executes order 900, never added inside the window.
+    assert events[0] == ExecuteOrder(ts=34_200_200_000_000, order_id=seed_order_id(Side.ASK, 585100), qty=60)
+    # A full deletion of an unseen order removes only its own shares from the seed.
+    assert events[1] == CancelOrder(ts=34_200_300_000_000, order_id=seed_order_id(Side.BID, 584900), qty=100)
+    # Order 10 was added in row 0, i.e. before the replay starts, so it is part of the seed too.
+    assert events[2] == CancelOrder(ts=34_200_400_000_000, order_id=seed_order_id(Side.BID, 585000), qty=10)
+
+
+def test_depths_drop_empty_levels() -> None:
+    snapshots = depths(read_orderbook(ORDERBOOK, n_levels=1), n_levels=1)
+    assert snapshots[0] == ([(585000, 100)], [])
+    assert snapshots[1] == ([(585000, 100)], [(585100, 50)])

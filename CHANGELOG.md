@@ -5,6 +5,34 @@ versions follow [Semantic Versioning](https://semver.org/). Each roadmap phase
 (see [docs/ROADMAP.md](docs/ROADMAP.md)) is logged in two steps: the tests
 that define it, then the implementation that makes them pass.
 
+## [Unreleased]: Phase 1, order-level data and exact replay
+
+### Tests (written first, failing)
+- `test_book.py`: `execute_order` fills a named order anywhere in its queue
+  and keeps queue priority on partial fills; over-execution is rejected
+  without changing state; `queue_ahead` counts only older orders at the
+  same price; `would_cross` agrees with the matching rule; `resting_order`
+  returns a detached copy.
+- `test_events.py`: events are immutable values; non-positive quantities
+  and negative timestamps are rejected.
+- `test_itch.py` with `itch_writer.py` (a byte-level ITCH 5.0 builder):
+  decoding of S/R/A/F/E/C/X/D/U/P; ignored types are skipped by length; the
+  symbol filter; gzip and plain files; full 6-byte timestamps; an unknown
+  symbol is an error; truncation is an error; messages straddling read
+  chunks.
+- `test_replay.py`: depth after a hand-built stream; a priority audit that
+  flags executions behind the queue head or away from the best price;
+  unknown-id references counted, not raised; replace = new order at the back
+  of the queue; crossing adds counted; hidden trades leave the book alone;
+  `C` executions applied but not audited; audit restricted to the 'Q'–'M'
+  session; `seed_book`; exact replay of both LOBSTER fixtures against every
+  snapshot, including a window that opens with resting orders; mismatches
+  reported by row.
+- `test_lobster.py`: `to_events` mapping of types 1–4; pre-window order ids
+  mapped onto per-level seed orders; `depths` drops empty-level codes.
+- New fixture `seeded_message.csv`/`seeded_orderbook.csv`: a 2-level window
+  whose first snapshot already holds orders added before the window.
+
 ## [0.2.0] - 2026-10-07: Phase 0, foundation
 
 Restructured from flat scripts to a typed package after an architecture and

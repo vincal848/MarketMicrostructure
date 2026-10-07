@@ -5,7 +5,33 @@ versions follow [Semantic Versioning](https://semver.org/). Each roadmap phase
 (see [docs/ROADMAP.md](docs/ROADMAP.md)) is logged in two steps: the tests
 that define it, then the implementation that makes them pass.
 
-## [Unreleased]: Phase 3b, multi-timescale kernels
+## [Unreleased]: Phase 5, market makers and PnL attribution
+
+### Tests (written first, failing)
+- `test_accounting.py`:
+  - Cash, inventory and mark-to-market; maker rebates and taker fees.
+  - A hand-computed two-fill attribution (spread capture, adverse selection
+    at horizon h, inventory).
+  - The components sum exactly to mark-to-market PnL on 60 random fills.
+  - `MidPath.at` lookup; maximum absolute inventory and volume.
+- `test_agents.py`:
+  - Avellaneda-Stoikov quotes in tick units equal the closed form, rounded
+    outward to the tick grid; long inventory lowers both quotes.
+  - Quotes are clipped post-only, so they never cross; the inventory cap
+    sizes the bid down and then removes it; inventory tracks fills.
+  - The fixed-spread agent is symmetric around mid; agents stand aside on
+    a one-sided book.
+  - `estimate_fill_curve` recovers an exponential fill decay (κ = 0.7)
+    within 5%; `estimate_sigma` recovers random-walk volatility within 10%.
+- `test_evaluation.py`:
+  - The paired bootstrap difference of identical samples is exactly zero,
+    and its interval covers a known shift.
+  - An agent evaluated against itself on the same seeds differs by exactly
+    zero.
+  - Both baselines trade in every seed, the legacy failure is checked
+    explicitly, and every run's attribution sums to its PnL.
+
+## Phase 3b, multi-timescale kernels
 
 Added after Phase 3's first real-data calibration. With one exponential
 kernel, the fitted decay hit its upper bound (5000/s) in every window of

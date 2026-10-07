@@ -1,0 +1,58 @@
+# SPY, Nasdaq TotalView-ITCH 2019-01-30, calibrated on the 11:00-11:30 window.
+# Produce the artifacts with (see docs/RESULTS.md):
+#   microstructure calibrate-itch <itch.gz> --symbol SPY --out runs/m3_calibrate_itch_spy_20190130.json \
+#       --marks-out runs/m3_marks_itch_spy_20190130.npz
+#   microstructure depth-itch <itch.gz> --symbol SPY --at 11:00 --out runs/depth_itch_spy_20190130_1100.json
+name = "spy-20190130-1100"
+
+[data]
+calibration = "../runs/m3_calibrate_itch_spy_20190130.json"
+window = 2  # 11:00-11:30
+marks = "../runs/m3_marks_itch_spy_20190130.npz"
+depth = "../runs/depth_itch_spy_20190130_1100.json"
+tick = 100  # $0.01 in 1/10000-dollar price units
+
+[market]
+horizon = 300.0  # five-minute episodes
+latency = 0.0005  # 500 microseconds from decision to the book
+attribution_horizon = 1.0
+maker_fee = -20.0  # $0.0020/share rebate, in 1/10000-dollar units
+taker_fee = 30.0  # $0.0030/share fee
+
+[seeds]
+calibration = [0, 4]
+train = [1000, 2000]
+validation = [5000, 5010]
+test = [9000, 9030]
+
+[agents.fixed-1]
+kind = "fixed-spread"
+half_spread_ticks = 1
+size = 100
+
+[agents.as]
+kind = "avellaneda-stoikov"
+gamma = 0.0001
+size = 100
+
+[agents.as-capped]
+kind = "avellaneda-stoikov"
+gamma = 0.0001
+size = 100
+inventory_cap = 500
+
+[rl]
+episodes = 300
+checkpoint_every = 25
+step_seconds = 1.0
+quote_size = 100
+max_inventory = 500
+inventory_penalty = 0.002
+hidden = [64, 64]
+learning_rate = 0.0005
+gamma = 0.99
+batch_size = 64
+warmup_steps = 1000
+target_update_steps = 500
+epsilon_decay_steps = 30000
+seed = 0

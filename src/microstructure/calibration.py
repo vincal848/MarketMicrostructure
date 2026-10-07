@@ -98,6 +98,7 @@ class WindowFit:
             "decays": params.beta[:, 0, 0].tolist(),
             "decay_se": self.hawkes.decay_se,
             "branching_ratio": self.branching_ratio,
+            "kkt_residual": self.hawkes.kkt_residual,
             "aic_improvement": self.aic_improvement,
             "mu": params.mu.tolist(),
             "mu_se": self.hawkes.mu_se.tolist(),

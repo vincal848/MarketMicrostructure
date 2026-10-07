@@ -5,7 +5,46 @@ versions follow [Semantic Versioning](https://semver.org/). Each roadmap phase
 (see [docs/ROADMAP.md](docs/ROADMAP.md)) is logged in two steps: the tests
 that define it, then the implementation that makes them pass.
 
-## [Unreleased]: Phase 7, productionization
+## [Unreleased]: Phase 2 fix, estimator convergence on real flow
+
+Found while preparing the Phase 4–6 acceptance runs. The calibrated model's
+stationary intensity was 74 events/s against 131/s realized in the same
+window. That is impossible at a maximum: there, each type's fitted
+compensator equals its event count. Diagnosis on the real 11:00–11:30 SPY
+window: L-BFGS-B exhausted its 15,000 evaluations with gradient components
+of ~300 left. Parameters spanned 0.005–11,298 and compensator coefficients
+0.02–112,398, so the fit was badly conditioned, and compensators came out
+1–10% short of the event counts. Every M3 grid fit before this fix was
+unconverged.
+
+### Tests (written first; the first one failed on the old optimizer)
+- `test_six_type_flow_with_replace_ties_converges`: a six-type process with
+  tied cancel/add pairs and decays from 1e5 to 1 per second. The old
+  optimizer left one type's compensator 0.05% short; the test requires
+  1e-4 and a KKT residual below 1e-5.
+- `test_adding_a_decay_never_lowers_the_fitted_likelihood` and
+  `test_fitted_compensator_equals_the_event_count` (nested-model and
+  Euler-identity checks), plus a 1-D wide-scale case and a badly scaled
+  design for the per-target KKT contract. These passed on the old code;
+  only real-data scale exposed the failure.
+
+### Fix
+- `hawkes_estimation._maximize_target` now solves in scale-free
+  coordinates u_c = θ_c·b_c (each coefficient's share of the compensator).
+  It starts with 50 monotone EM steps, then L-BFGS-B with an evaluation
+  budget of 200,000. Coefficients of source types with no events are fixed
+  at zero rather than producing 0/0. `HawkesFit.kkt_residual` reports the
+  largest optimality violation and appears in calibration summaries.
+- Result on the real 11:00 window, 6 decays:
+  - converged, with KKT residual 7.5e-7 and compensator equal to count
+    within 3e-8;
+  - log-likelihood 1,451,322, against 1,441,745 before;
+  - stationary intensity 131.4/s, against 131.3/s realized;
+  - fit time 7 s instead of 143 s.
+  - The nested grids now behave: 7 decays gain 50 log-likelihood (AIC −26),
+    and 8 decays do not pay for their parameters.
+
+## Phase 7, productionization
 
 ### Tests (written first, failing)
 - `test_properties.py` (Hypothesis): under any sequence of limit, market,

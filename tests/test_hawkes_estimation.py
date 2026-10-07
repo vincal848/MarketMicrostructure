@@ -142,3 +142,37 @@ def test_objective_gradient_matches_finite_differences() -> None:
         for e in np.eye(4)
     ]
     np.testing.assert_allclose(gradient, numeric, rtol=1e-6)
+
+
+def _badly_scaled_design(seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """A design shaped like real SPY flow's: 37 columns whose scales span
+    seven orders of magnitude, most of them sparse (fast kernels are nonzero
+    only right after an event)."""
+    rng = np.random.default_rng(seed)
+    n, columns = 20_000, 36
+    scales = np.logspace(-4, 3, columns)
+    active = rng.uniform(size=(n, columns)) < np.linspace(0.02, 1.0, columns)
+    kernel = active * rng.lognormal(0.0, 1.0, size=(n, columns)) * scales
+    design = np.hstack([np.ones((n, 1)), kernel])
+    linear = np.concatenate([[1800.0], kernel.sum(axis=0) * rng.uniform(0.5, 3.0, columns)])
+    return design, linear
+
+
+def test_target_optimizer_meets_the_optimality_conditions_on_a_badly_scaled_design() -> None:
+    # Contract: the per-target optimizer must reach the KKT conditions however
+    # the columns are scaled (on real SPY flow they span ~7 orders of magnitude).
+    from microstructure.hawkes_estimation import _maximize_target, _objective
+
+    design, linear = _badly_scaled_design(0)
+    theta, _, _, kkt = _maximize_target(design, linear)
+    assert kkt < 1e-6
+    _, gradient = _objective(theta, design, linear)
+    n = design.shape[0]
+    # In scale-free units (each coefficient as its share of the compensator)
+    # the KKT conditions are: gradient 0 where the coefficient is positive,
+    # and <= 0 where it is held at zero.
+    scaled = gradient * linear / n
+    positive = theta * linear / n > 1e-9
+    assert np.max(np.abs(scaled[positive])) < 1e-6
+    assert np.max(scaled[~positive], initial=-1.0) < 1e-6
+    assert linear @ theta == pytest.approx(n, rel=1e-6)

@@ -102,3 +102,82 @@ def test_online_excitation_adds_every_components_jump() -> None:
     before = online.intensity()
     online.excite(0)
     np.testing.assert_allclose(online.intensity() - before, TWO_SCALE.alpha[:, :, 0].sum(axis=0))
+
+
+# --- Robust convergence (found on real data: fits with slow decays diverged) ---
+
+
+def test_adding_a_decay_never_lowers_the_fitted_likelihood(two_scale_stream: EventStream) -> None:
+    # Nested models: a third, much slower component can only help. On real
+    # SPY flow, the old optimizer returned a *lower* likelihood (and once an
+    # AIC of 4.5e17) after a slow decay was added.
+    base = fit(two_scale_stream, n_types=2, decay=[FAST, SLOW])
+    nested = fit(two_scale_stream, n_types=2, decay=[FAST, SLOW, 0.01])
+    assert nested.log_likelihood >= base.log_likelihood - 1e-6 * abs(base.log_likelihood)
+
+
+def test_fitted_compensator_equals_the_event_count(two_scale_stream: EventStream) -> None:
+    # At the maximum likelihood the compensator over [0, T] equals the number
+    # of events of each type (Euler's identity for this linear model), so a
+    # mismatch means the optimizer stopped early.
+    from microstructure.hawkes import compensator_tails
+
+    result = fit(two_scale_stream, n_types=2, decay=[FAST, SLOW, 0.01, 1000.0])
+    tails = compensator_tails(two_scale_stream, 2, result.params.beta)
+    compensator = result.params.mu * two_scale_stream.horizon + (result.params.alpha * tails).sum(axis=(0, 2))
+    np.testing.assert_allclose(compensator, two_scale_stream.counts(2), rtol=1e-4)
+
+
+@pytest.fixture(scope="module")
+def wide_scale_stream() -> tuple[HawkesParams, EventStream]:
+    # Like real flow: a high event rate and decays spanning six orders of
+    # magnitude, so kernel-sum columns differ in scale by ~1e5 and the
+    # likelihood is badly conditioned.
+    decays = [1e4, 1.0, 0.01]
+    params = HawkesParams(
+        mu=[50.0],
+        alpha=[[[2000.0]], [[0.2]], [[0.001]]],
+        beta=[[[d]] for d in decays],
+    )
+    return params, simulate(params, horizon=300.0, seed=5)
+
+
+def test_badly_conditioned_fits_still_converge(wide_scale_stream: tuple[HawkesParams, EventStream]) -> None:
+    from microstructure.hawkes import compensator_tails
+
+    truth, stream = wide_scale_stream
+    result = fit(stream, n_types=1, decay=[1e4, 1.0, 0.01])
+    tails = compensator_tails(stream, 1, result.params.beta)
+    compensator = result.params.mu * stream.horizon + (result.params.alpha * tails).sum(axis=(0, 2))
+    np.testing.assert_allclose(compensator, stream.counts(1), rtol=1e-4)
+    assert result.log_likelihood >= log_likelihood(stream, truth)
+
+
+def test_six_type_flow_with_replace_ties_converges() -> None:
+    # Regression: real SPY flow (six types, tied cancel/add pairs from order
+    # replaces, decays 1e5 .. 1/s) left L-BFGS-B out of evaluations with
+    # fitted compensators 1-10% short of the event counts. This smaller
+    # analogue left one type 0.05% short under the old optimizer.
+    from microstructure.hawkes import compensator_tails
+
+    decays = np.array([1e5, 1e4, 1e3, 100.0, 10.0, 1.0])
+    alpha = np.zeros((6, 6, 6))
+    alpha[3] = 15.0 * np.eye(6)
+    alpha[4] = 0.6
+    alpha[5] = 0.05 * np.eye(6)
+    params = HawkesParams(
+        mu=[1, 1, 20, 2, 15, 25], alpha=alpha, beta=np.broadcast_to(decays[:, None, None], alpha.shape)
+    )
+    base = simulate(params, horizon=300.0, seed=2)
+    pick = np.random.default_rng(0).uniform(size=len(base)) < 0.08
+    replaces = base.times[pick & (base.types == 5)]  # each cancel instantly followed by an add
+    times = np.concatenate([base.times, replaces])
+    types = np.concatenate([base.types, np.full(len(replaces), 4)])
+    order = np.argsort(times, kind="stable")
+    stream = EventStream(times[order], types[order], 300.0)
+
+    result = fit(stream, n_types=6, decay=list(decays))
+    tails = compensator_tails(stream, 6, result.params.beta)
+    compensator = result.params.mu * stream.horizon + (result.params.alpha * tails).sum(axis=(0, 2))
+    np.testing.assert_allclose(compensator, stream.counts(6), rtol=1e-4)
+    assert result.kkt_residual < 1e-5

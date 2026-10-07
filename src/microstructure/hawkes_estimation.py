@@ -10,8 +10,19 @@ contributes
 
     f(theta) = sum_k log(x_k . theta) - b . theta,     theta = (mu_i, alpha_i.) >= 0
 
-which L-BFGS-B maximizes with its exact gradient X^T (1/lambda) - b. The
-observed information X^T diag(1/lambda^2) X gives standard errors.
+It is solved in scale-free coordinates u_c = theta_c * b_c, each
+coefficient's share of the compensator: with z_kc = x_kc / b_c the objective
+becomes sum_k log(z_k . u) - sum_c u_c, and its gradient z^T (1/lambda) - 1 is
+dimensionless. On real flow the raw columns span about seven orders of
+magnitude, and L-BFGS-B in theta exhausted its evaluations with gradients of
+~300 left (compensators 1-10% short of the event counts). In u it converges
+in about a hundred iterations. A few EM steps (the multiplicative update
+u_c <- u_c * sum_k z_kc / lambda_k, which never decreases the likelihood and
+keeps u positive) give it a feasible start. At the optimum the KKT
+conditions read: gradient 0 where u_c > 0 and <= 0 where u_c = 0, and the
+fitted compensator equals the event count. `HawkesFit.kkt_residual` reports
+the largest violation. The observed information X^T diag(1/lambda^2) X gives
+standard errors.
 
 Decays are therefore fixed, never jointly optimized with alpha (that problem
 is non-convex and poorly identified). Two ways to choose them:
@@ -53,7 +64,9 @@ class HawkesFit:
 
     `decay_se` is None when the decay was fixed rather than estimated.
     Standard errors of parameters estimated at their zero bound come from the
-    same information matrix and are only indicative there.
+    same information matrix and are only indicative there. `kkt_residual` is
+    the largest violation of the optimality conditions in scale-free units
+    (about 1e-7 for a converged fit).
     """
 
     params: HawkesParams
@@ -62,6 +75,7 @@ class HawkesFit:
     decay_se: float | None
     log_likelihood: float
     n_params: int
+    kkt_residual: float = 0.0
 
     @property
     def aic(self) -> float:
@@ -84,34 +98,55 @@ def _objective(theta: FloatArray, design: FloatArray, linear: FloatArray) -> tup
     return float(np.log(intensity).sum() - linear @ theta), gradient
 
 
-def _maximize_target(design: FloatArray, linear: FloatArray) -> tuple[FloatArray, FloatArray, float]:
+_EM_WARM_START_STEPS = 50
+
+
+def _maximize_target(design: FloatArray, linear: FloatArray) -> tuple[FloatArray, FloatArray, float, float]:
     """Maximize `_objective` over theta >= 0, with theta[0] (the background
     rate) kept strictly positive.
 
-    Returns (theta, standard errors, maximum).
+    Returns (theta, standard errors, maximum, KKT residual).
+
+    A coefficient whose source type has no events has a zero column and a
+    zero compensator coefficient: it affects nothing, so it is fixed at zero
+    and left out of the optimization.
     """
-
-    def negative(theta: FloatArray) -> tuple[float, FloatArray]:
-        value, gradient = _objective(theta, design, linear)
-        return -value, -gradient
-
+    theta = np.zeros(design.shape[1])
+    std_errors = np.zeros(design.shape[1])
+    identified = linear > 0
+    design, linear = design[:, identified], linear[identified]
     n_events, n_params = design.shape
-    rate = n_events / linear[0]
-    start = np.concatenate([[0.5 * rate], np.full(n_params - 1, 0.1)])
-    bounds = [(1e-12 * rate, None)] + [(0.0, None)] * (n_params - 1)
+    scaled = design / linear  # z: column c in units of its compensator share
+
+    def negative(u: FloatArray) -> tuple[float, FloatArray]:
+        intensity = scaled @ u
+        if np.any(intensity <= 0):
+            return float("inf"), np.zeros_like(u)
+        gradient: FloatArray = scaled.T @ (1.0 / intensity) - 1.0
+        return -float(np.log(intensity).sum() - u.sum()), -gradient
+
+    u = np.full(n_params, n_events / n_params)
+    for _ in range(_EM_WARM_START_STEPS):
+        u *= scaled.T @ (1.0 / (scaled @ u))
     result = minimize(
         negative,
-        start,
+        u,
         jac=True,
         method="L-BFGS-B",
-        bounds=bounds,
-        options={"maxiter": 20_000, "ftol": 1e-15, "gtol": 1e-10},
+        bounds=[(1e-12 * n_events, None)] + [(0.0, None)] * (n_params - 1),
+        options={"maxiter": 100_000, "maxfun": 200_000, "ftol": 1e-15, "gtol": 1e-10},
     )
-    theta = np.asarray(result.x, dtype=np.float64)
-    intensity = design @ theta
+    u = np.asarray(result.x, dtype=np.float64)
+    _, gradient = negative(u)
+    gradient = -gradient
+    active = u > 1e-9 * n_events
+    kkt = max(float(np.abs(gradient[active]).max(initial=0.0)), float(gradient[~active].max(initial=0.0)))
+
+    theta[identified] = u / linear
+    intensity = design @ theta[identified]
     information = design.T @ (design / intensity[:, None] ** 2)
-    std_errors = np.sqrt(np.clip(np.diag(np.linalg.pinv(information)), 0.0, None))
-    return theta, std_errors, -float(result.fun)
+    std_errors[identified] = np.sqrt(np.clip(np.diag(np.linalg.pinv(information)), 0.0, None))
+    return theta, std_errors, -float(result.fun), kkt
 
 
 def _decay_grid(decay: float | Sequence[float], n_types: int) -> FloatArray:
@@ -130,19 +165,20 @@ def _fit_with_decay(stream: EventStream, n_types: int, beta: FloatArray) -> Hawk
     mu, mu_se = np.zeros(n_types), np.zeros(n_types)
     alpha, alpha_se = np.zeros(beta.shape), np.zeros(beta.shape)
     tails = compensator_tails(stream, n_types, beta)
-    total = 0.0
+    total, kkt = 0.0, 0.0
     for i, target in enumerate(target_sums(stream, n_types, beta)):
         n_i = target.times.shape[0]
         if n_i == 0:
             continue  # no events of type i: mu_i = alpha_.i. = 0 is the maximizer
         design = np.hstack([np.ones((n_i, 1)), target.kernel.reshape(n_i, -1)])
         linear = np.concatenate([[stream.horizon], tails[:, i, :].ravel()])
-        theta, std_errors, value = _maximize_target(design, linear)
+        theta, std_errors, value, residual = _maximize_target(design, linear)
         mu[i], alpha[:, i, :] = theta[0], theta[1:].reshape(n_components, n_types)
         mu_se[i], alpha_se[:, i, :] = std_errors[0], std_errors[1:].reshape(n_components, n_types)
         total += value
+        kkt = max(kkt, residual)
     n_params = n_types + n_components * n_types**2
-    return HawkesFit(HawkesParams(mu, alpha, beta), mu_se, alpha_se, None, total, n_params)
+    return HawkesFit(HawkesParams(mu, alpha, beta), mu_se, alpha_se, None, total, n_params, kkt)
 
 
 def fit(stream: EventStream, n_types: int, decay: float | Sequence[float]) -> HawkesFit:
@@ -180,7 +216,15 @@ def fit_decay(stream: EventStream, n_types: int, bounds: tuple[float, float]) ->
     step = 1e-3 * decay
     curvature = (profile(decay + step) - 2.0 * best.log_likelihood + profile(decay - step)) / step**2
     decay_se = float(1.0 / np.sqrt(-curvature)) if curvature < 0 else float("nan")
-    return HawkesFit(best.params, best.mu_se, best.alpha_se, decay_se, best.log_likelihood, best.n_params + 1)
+    return HawkesFit(
+        best.params,
+        best.mu_se,
+        best.alpha_se,
+        decay_se,
+        best.log_likelihood,
+        best.n_params + 1,
+        best.kkt_residual,
+    )
 
 
 def fit_poisson(stream: EventStream, n_types: int) -> HawkesFit:

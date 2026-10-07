@@ -1,6 +1,6 @@
 # Roadmap
 
-A phased plan from the current scaffold to a calibrated, validated market
+A phased plan from the original scaffold to a calibrated, validated market
 simulator with closed-form and learned market makers. [MOTIVATION.md](MOTIVATION.md)
 says why; this file says what gets built, in what order, and how each phase
 proves it works.
@@ -39,6 +39,18 @@ in the attached snapshot (verified on 2025-11-11, record 30). So MBP data is
 treated as *snapshots plus trades*, and level events are derived by diffing
 consecutive snapshots. It cannot support exact order-level replay; ITCH can.
 
+## Status
+
+Every phase below is implemented, test-first; [CHANGELOG.md](../CHANGELOG.md)
+logs each one as a tests commit followed by an implementation commit.
+Real data forced two additions that were not in the original plan. Both are
+recorded where they belong:
+
+- **Phase 3b**: multi-timescale kernels. A single exponential's decay ran
+  to its search bound on every real window.
+- **The Phase 2 estimator fix**: scale-free coordinates. Real-flow fits had
+  stopped short of the optimum.
+
 ---
 
 ## Phase 0: Foundation ✅
@@ -47,7 +59,7 @@ Typed package (`src/microstructure`), `pyproject.toml`, strict mypy, ruff, CI
 lint and test jobs, regression tests for the input-validation defects found in
 review, documentation set. Details in CHANGELOG 0.2.0.
 
-## Phase 1: Order-level data and exact replay (milestone M1)
+## Phase 1: Order-level data and exact replay (milestone M1) ✅
 
 **Goal.** Reconstruct a real order book message by message, and prove the
 book engine enforces price-time priority on real flow.
@@ -87,7 +99,7 @@ book engine enforces price-time priority on real flow.
 - The book is never crossed during continuous trading (09:30–16:00).
 - Replay throughput recorded (messages per second).
 
-## Phase 2: Hawkes estimation (milestone M2)
+## Phase 2: Hawkes estimation (milestone M2) ✅
 
 **Goal.** Fit a multivariate Hawkes process reliably, with uncertainty and a
 goodness-of-fit test.
@@ -115,7 +127,13 @@ goodness-of-fit test.
 
 **Acceptance.** The recovery tests above, in CI, with a runtime budget.
 
-## Phase 3: Event classification and calibration to real flow (milestone M3)
+**Added after real data.** On real SPY flow the optimizer stopped short of
+the optimum, with fitted compensators 1–10% below the event counts. The
+fitter now solves in compensator-share coordinates with an EM warm start,
+and reports `kkt_residual`. The regression test is a six-type process with
+tied replace events, which failed under the old optimizer.
+
+## Phase 3: Event classification and calibration to real flow (milestone M3) ✅
 
 **Goal.** Turn replayed order flow into the six-type event alphabet and fit it.
 
@@ -150,7 +168,17 @@ goodness-of-fit test.
 - 2019 ITCH vs 2025 MBP-10: fitted rates and branching ratios compared and
   reported.
 
-## Phase 4: Generative simulator (milestone M3, validation half)
+## Phase 3b: Multi-timescale kernels ✅ (added after Phase 3's first real fit)
+
+With one exponential per kernel, the fitted decay hit its upper bound
+(5000/s) in all 22 real windows. 61% of SPY inter-event gaps are under
+100 µs and 98% are under 100 ms, a range no single exponential spans.
+Kernels are now sums of exponentials on a fixed log-spaced decay grid
+(`DecayGrid`, default 1e5 … 1 per second), which keeps the fit concave
+(the approach of `tick`'s HawkesSumExpKern). Tests: two-scale recovery,
+AIC preferring two scales over either one, and KS under the true model.
+
+## Phase 4: Generative simulator (milestone M3, validation half) ✅
 
 **Goal.** A discrete-event market that produces realistic flow and accepts
 agent orders.
@@ -183,7 +211,7 @@ intensities. The stylized-fact comparison against the replayed real day is
 reported side by side in RESULTS.md, with discrepancies quantified (for
 example the total-variation distance between spread distributions).
 
-## Phase 5: Market makers and PnL attribution (milestone M4)
+## Phase 5: Market makers and PnL attribution (milestone M4) ✅
 
 **Goal.** Baseline market makers evaluated with an industry-style PnL split.
 
@@ -217,7 +245,7 @@ example the total-variation distance between spread distributions).
 fill counts. A results table (PnL, Sharpe, fills, adverse selection, inventory
 excursions) with 95% CIs over at least 30 seeds.
 
-## Phase 6: Reinforcement-learning market maker (milestone M5)
+## Phase 6: Reinforcement-learning market maker (milestone M5) ✅
 
 **Goal.** A learned quoting policy, compared fairly against Phase 5.
 
@@ -245,7 +273,7 @@ excursions) with 95% CIs over at least 30 seeds.
 comparison table is reported with CIs and attribution, *whichever way it comes
 out*.
 
-## Phase 7: Productionization
+## Phase 7: Productionization ✅
 
 **Deliverables**
 - A `microstructure` console script with subcommands `replay`, `calibrate`,
@@ -261,6 +289,9 @@ out*.
 
 **Acceptance.** A fresh clone can reproduce every number in RESULTS.md from
 documented commands, given the data files.
+
+**Added during implementation.** `tests/test_architecture.py` enforces the
+layer diagram by parsing imports, and keeps the core free of I/O.
 
 ## Beyond the plan
 

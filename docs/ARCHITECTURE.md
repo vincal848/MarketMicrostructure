@@ -3,51 +3,73 @@
 ## Layers
 
 The package is organised as layers with a single dependency direction. A
-module may import from layers below it, never above:
+module may import from its own layer or lower ones, never higher.
+`tests/test_architecture.py` parses every module's imports and enforces
+this, so the diagram cannot drift from the code:
 
 ```
-  cli / configs                         Phase 7   entry points, run manifests
-        │
-  evaluation · rl · env                 Phases 5–6  experiments over the simulator
-        │
-  agents · accounting                   Phase 5   market makers, PnL ledger
-        │
-  simulator · stylized                  Phase 4   discrete-event market
-        │
-  calibration · flow                    Phase 3   real flow → event alphabet → fit
-        │
-  replay                                Phase 1   drive a book from order events
-        │
-  itch · lobster · databento            Phases 1/3  source adapters (I/O lives here)
-        │
-  events · book · hawkes · avellaneda_stoikov     core: pure, typed, no I/O
+  7  experiment · bench · cli                  entry points, run directories
+  6  evaluation · env · rl                     experiments over the simulator
+  5  agents · accounting                       market makers, PnL ledger
+  4  simulator                                 discrete-event market
+  3  flow · calibration · databento · stylized real flow -> event alphabet -> fit; tape statistics
+  2  replay                                    drive a book from order events
+  1  itch · lobster                            order-level source adapters
+  0  events · book · hawkes · hawkes_estimation · avellaneda_stoikov
+                                               core: pure, typed, no I/O
 ```
+
+`databento` sits in layer 3, not with the other adapters. MBP-10 data has no
+order ids, so it cannot be replayed; it is classified straight into flow by
+snapshot diffs.
 
 Rules that keep the boundaries clean:
 
-- **Core modules do no I/O.** `book`, `hawkes`, `avellaneda_stoikov` and
-  `events` never read files, log or print. Everything that touches the
-  filesystem lives in an adapter or the CLI. This is what lets the core be
-  tested exhaustively and quickly.
-- **One event model.** Every data source is converted to `events.py` types at
-  the boundary. Nothing above the adapters knows whether data came from ITCH,
-  LOBSTER or Databento.
-- **Integer prices everywhere below the agents.** Prices are integer ticks
-  (or 1/10000 dollars at the adapter boundary). Floats appear only in model
-  parameters and PnL. The legacy project's unit bug came from mixing these.
-- **Validated value objects.** Parameters (`HawkesParams`, `ASParams`) and
-  data (`EventStream`) validate once, on construction, and are immutable.
-  Functions take these objects instead of loose arrays, so every function
-  can rely on its inputs.
+- **Core modules do no I/O.** Layer 0 never opens files, prints, logs, or
+  imports `os`, `sys`, `pathlib` or `subprocess`; the architecture test
+  checks this. Everything that touches the filesystem lives in an adapter
+  or an entry point, which is what lets the core be tested exhaustively and
+  quickly.
+- **One event model.** Every order-level source is converted to `events.py`
+  types at the boundary. Nothing above the adapters knows whether data came
+  from ITCH or LOBSTER.
+- **Integer prices everywhere below the agents.** Prices are integer 1/10000
+  dollars (ITCH and LOBSTER units), and agents work in integer ticks.
+  Floats appear only in model parameters and PnL. The legacy project's unit
+  bug came from mixing these.
+- **Validated value objects.** Parameters (`HawkesParams`, `ASParams`,
+  `SimulationConfig`, `EnvConfig`, the experiment specs) and data
+  (`EventStream`, `ClassifiedFlow`) validate once, on construction, and are
+  immutable. Functions take these objects instead of loose arrays, so every
+  function can rely on its inputs.
+- **Optional heavy dependencies stay optional.** PyTorch is imported only by
+  `rl.py`, and by `experiment.py` only when a config contains `[rl]`.
 
-## Current modules
+## Modules
 
-| Module | Contents | Key invariant |
-|---|---|---|
-| `book.py` | `Side`, `Order`, `Fill`, `OrderBook` | best bid < best ask after every call; a rejected call changes nothing |
-| `hawkes.py` | `HawkesParams`, `EventStream`, `simulate`, `log_likelihood` | params are non-negative, shapes consistent, read-only; events sorted and inside `[0, horizon]` |
-| `avellaneda_stoikov.py` | `ASParams`, `reservation_price`, `optimal_spread`, `quotes` | outputs rescale exactly with the price unit |
-| `lobster.py` | `EventType`, `Direction`, `read_messages`, `read_orderbook`, `read_paired` | column count checked against the raw file |
+| Module | Layer | Contents | Key invariant or contract |
+|---|---|---|---|
+| `events.py` | 0 | Normalized order events, `seed_order_id` | Immutable; quantities positive, timestamps non-negative |
+| `book.py` | 0 | `Side`, `Order`, `Fill`, `OrderBook` | best bid < best ask after every call; a rejected call changes nothing |
+| `hawkes.py` | 0 | `HawkesParams` (U components), `EventStream`, `OnlineHawkes`, `simulate`, `log_likelihood`, vectorized kernel sums | Params non-negative and read-only; stepping `OnlineHawkes` reproduces one run exactly |
+| `hawkes_estimation.py` | 0 | `fit` (decay grid), `fit_decay` (profiled), `fit_poisson`, residuals, KS | Concave per-target MLE with exact gradient; SEs from observed information |
+| `avellaneda_stoikov.py` | 0 | `ASParams`, `reservation_price`, `optimal_spread`, `quotes` | Outputs rescale exactly with the price unit |
+| `itch.py` | 1 | Streaming TotalView-ITCH 5.0 decoder | Truncated streams and unknown symbols are errors |
+| `lobster.py` | 1 | LOBSTER parser, `to_events`, `depths` | Column counts checked on the raw file; one event per row |
+| `replay.py` | 2 | `Replayer` with a price-time priority audit, `seed_book`, `verify_snapshots`, `depth_at` | Every execution is checked against the queue head at the best price |
+| `flow.py` | 3 | `FlowType`, `ClassifiedFlow`, `classify`, `marks` | Each event is typed against the book *before* it |
+| `databento.py` | 3 | MBP-10 snapshot-diff classifier | Fills absorbed before cancels; only prices visible in both snapshots compared |
+| `calibration.py` | 3 | `session_windows`, `calibrate_window` (`ProfiledDecay` / `DecayGrid`) | Hawkes and Poisson fitted to the same window |
+| `stylized.py` | 3 | `MarketTape`, `record_tape`, spread / ACF / signature plot | Same code for real and simulated tapes |
+| `simulator.py` | 4 | `MarketSimulator`, `Agent` protocol, `Quote`, `SendMarketOrder` | Background cancels never touch agent orders; latency exact; seeded |
+| `accounting.py` | 5 | `Ledger`, `MidPath`, PnL attribution | Spread + adverse + inventory - fees = MTM exactly |
+| `agents.py` | 5 | `AvellanedaStoikovAgent`, `FixedSpreadAgent`, `estimate_sigma`, `estimate_fill_curve` | Ticks throughout; post-only; cap sizes orders down |
+| `evaluation.py` | 6 | `Scenario`, `evaluate`, `EvaluationTable`, `calibrate_avellaneda_stoikov`, bootstrap CIs | Paired by seed; every agent rebuilt per run |
+| `env.py` | 6 | `MarketMakingEnv` | Same accounting as the baselines; inventory cap at every decision |
+| `rl.py` | 6 | Double DQN, `ReplayBuffer`, `Policy` | Seeded and bit-for-bit reproducible |
+| `experiment.py` | 7 | TOML config, `build_scenario`, `run_experiment` | Disjoint seed ranges; manifest pins code and versions |
+| `bench.py` | 7 | Throughput benchmarks | Seeded synthetic workloads |
+| `cli.py` | 7 | `microstructure` console script | Thin wrappers over the layers below |
 
 ## Order book
 

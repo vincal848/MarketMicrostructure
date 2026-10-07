@@ -65,6 +65,14 @@ that define it, then the implementation that makes them pass.
   depth tuples). The first draft of the property test was rewritten around
   typed operation dataclasses with exact volume conservation.
 
+### Architecture enforcement
+- `tests/test_architecture.py` parses every module's imports and fails if
+  any module imports a higher layer, if a module is missing from the layer
+  map, or if a core (layer 0) module does I/O. Writing it showed that the
+  diagram in `docs/ARCHITECTURE.md` had misplaced `databento` (it imports
+  `flow`, so it belongs in layer 3). The diagram was corrected to match the
+  enforced map, and the module table now covers all 21 modules.
+
 ## Phase 6, reinforcement-learning market maker
 
 ### Tests (written first, failing)

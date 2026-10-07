@@ -4,10 +4,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pytest
-
-from microstructure.book import Side
-from microstructure.flow import FlowMarks, FlowType
-from microstructure.hawkes import HawkesParams
 from microstructure.simulator import (
     Agent,
     AgentFill,
@@ -17,6 +13,10 @@ from microstructure.simulator import (
     SendMarketOrder,
     SimulationConfig,
 )
+
+from microstructure.book import Side
+from microstructure.flow import FlowMarks, FlowType
+from microstructure.hawkes import HawkesParams
 
 TICK = 100
 MID = 1_000_000  # $100.00 in 1/10000 dollars
@@ -156,12 +156,12 @@ def test_agent_fills_carry_side_price_and_quantity() -> None:
 
 
 def test_unchanged_quotes_keep_their_queue_position() -> None:
-    agent = TouchQuoter()
+    # Re-sending an identical quote every second must not cancel and re-add
+    # the orders (which would send them to the back of the queue).
+    agent = FarQuoter(decision_interval=1.0)
     simulator = _simulator(horizon=60.0, agents=(agent,))
     simulator.run()
-    # Re-quoting the same price and size every second must not churn ids:
-    # each order id is only replaced when the touch moves or after a fill.
-    assert simulator.agent_order_count(0) < 2 * len(agent.views)
+    assert simulator.agent_order_count(0) == 2
 
 
 def test_agent_market_orders_excite_the_background_flow() -> None:

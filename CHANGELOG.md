@@ -21,6 +21,10 @@ that define it, then the implementation that makes them pass.
   - Agent fills carry side, price and size, and passive fills are flagged
     non-aggressive.
   - Unchanged quotes keep their order ids, and so their queue position.
+    Revised before implementation: the first version depended on how
+    often the touch moves, which made it flaky by design. It now uses a
+    quoter re-sending identical far quotes, which must create exactly two
+    orders.
   - An agent market order excites the background MB intensity, and its
     fills are aggressive.
 - `test_stylized.py`:

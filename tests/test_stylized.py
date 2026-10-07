@@ -2,9 +2,6 @@
 
 import numpy as np
 import pytest
-
-from microstructure.book import Side
-from microstructure.events import AddOrder, ExecuteOrder, HiddenTrade, OrderEvent
 from microstructure.stylized import (
     MarketTape,
     record_tape,
@@ -13,6 +10,9 @@ from microstructure.stylized import (
     total_variation,
     trade_sign_autocorrelation,
 )
+
+from microstructure.book import Side
+from microstructure.events import AddOrder, ExecuteOrder, HiddenTrade, OrderEvent
 
 TICK = 100
 

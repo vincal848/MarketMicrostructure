@@ -3,16 +3,13 @@
 import numpy as np
 import pytest
 
-from microstructure.hawkes import (
-    EventStream,
-    HawkesParams,
+from microstructure.hawkes import EventStream, HawkesParams, log_likelihood, simulate
+from microstructure.hawkes_estimation import (
     fit,
     fit_decay,
     fit_poisson,
     ks_exponential,
-    log_likelihood,
     rescaled_residuals,
-    simulate,
 )
 
 TRUTH_2D = HawkesParams(
@@ -126,3 +123,22 @@ def test_fit_rejects_a_non_positive_decay(stream_2d: EventStream) -> None:
 def test_fit_rejects_types_beyond_n_types(stream_2d: EventStream) -> None:
     with pytest.raises(ValueError, match="types"):
         fit(stream_2d, n_types=1, decay=2.0)
+
+
+def test_objective_gradient_matches_finite_differences() -> None:
+    # The fitter's per-target objective (private, but its gradient drives
+    # every estimate, so it is checked directly).
+    from microstructure.hawkes_estimation import _objective
+
+    rng = np.random.default_rng(0)
+    design = np.hstack([np.ones((40, 1)), rng.uniform(0.0, 3.0, size=(40, 3))])
+    linear = np.array([25.0, 4.0, 7.0, 2.5])
+    theta = np.array([0.6, 0.2, 0.05, 0.3])
+    _, gradient = _objective(theta, design, linear)
+    step = 1e-6
+    numeric = [
+        (_objective(theta + step * e, design, linear)[0] - _objective(theta - step * e, design, linear)[0])
+        / (2 * step)
+        for e in np.eye(4)
+    ]
+    np.testing.assert_allclose(gradient, numeric, rtol=1e-6)

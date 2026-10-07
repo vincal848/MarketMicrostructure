@@ -182,35 +182,102 @@ def simulate(params: HawkesParams, horizon: float, seed: int | None = None) -> E
     return EventStream(times, types, horizon)
 
 
+# --- Vectorized kernel sums ------------------------------------------------------
+#
+# The likelihood, the estimators and the goodness-of-fit residuals all need,
+# at each event k of a target type i, the kernel sum over earlier events of
+# each source type j:
+#
+#     G[k, j] = sum_{m < k, type_m = j} exp(-beta_ij (t_k - t_m))
+#
+# It obeys G_k = exp(-beta dt) (G_{k-1} + [type_{k-1} = j]), evaluated here
+# with cumulative sums instead of a Python loop: inside a block starting at
+# t0, G_k = exp(-beta (t_k - t0)) * (carry + exclusive cumsum of
+# exp(beta (t_m - t0))). Blocks are cut so beta (t - t0) never exceeds
+# _MAX_EXPONENT, so the growing factor cannot overflow. "Earlier" means
+# earlier in stream order, so events sharing a timestamp excite later ones
+# exactly as in the sequential recursion.
+
+_MAX_EXPONENT = 300.0
+
+
+def _kernel_sum(times: FloatArray, is_source: FloatArray, beta: float) -> FloatArray:
+    sums: FloatArray = np.empty_like(times)
+    carry = 0.0
+    start, n = 0, times.shape[0]
+    while start < n:
+        t0 = times[start]
+        stop = max(int(np.searchsorted(times, t0 + _MAX_EXPONENT / beta, side="right")), start + 1)
+        offset = times[start:stop] - t0
+        weights = is_source[start:stop] * np.exp(beta * offset)
+        exclusive = np.cumsum(weights) - weights
+        sums[start:stop] = np.exp(-beta * offset) * (carry + exclusive)
+        if stop < n:
+            carry = float(np.exp(-beta * (times[stop] - t0)) * (carry + weights.sum()))
+        start = stop
+    return sums
+
+
+@dataclass(frozen=True)
+class TargetSums:
+    """Kernel sums and prior event counts at every event of one target type."""
+
+    times: FloatArray  # (n_i,) times of the target type's events
+    kernel: FloatArray  # (n_i, K) G[k, j]
+    counts_before: FloatArray  # (n_i, K) number of earlier type-j events
+
+
+def target_sums(stream: EventStream, n_types: int, beta: FloatArray) -> list[TargetSums]:
+    """`TargetSums` for each target type 0 .. n_types-1 under decays `beta`."""
+    require_types_within(stream, n_types)
+    one_hot = np.stack([(stream.types == j).astype(np.float64) for j in range(n_types)], axis=1)
+    counts_before = np.cumsum(one_hot, axis=0) - one_hot
+    by_source_and_decay: dict[tuple[int, float], FloatArray] = {}
+    targets = []
+    for i in range(n_types):
+        at_i = stream.types == i
+        columns = []
+        for j in range(n_types):
+            key = (j, float(beta[i, j]))
+            if key not in by_source_and_decay:
+                by_source_and_decay[key] = _kernel_sum(stream.times, one_hot[:, j], key[1])
+            columns.append(by_source_and_decay[key][at_i])
+        targets.append(TargetSums(stream.times[at_i], np.stack(columns, axis=1), counts_before[at_i]))
+    return targets
+
+
+def compensator_tails(stream: EventStream, n_types: int, beta: FloatArray) -> FloatArray:
+    """tails[i, j] = sum over type-j events s of (1 - exp(-beta_ij (T - s))) / beta_ij.
+
+    alpha_ij * tails[i, j] is type j's total contribution to type i's
+    compensator over [0, T].
+    """
+    tails = np.zeros((n_types, n_types))
+    for j in range(n_types):
+        remaining = stream.horizon - stream.times[stream.types == j]
+        tails[:, j] = (1.0 - np.exp(-np.outer(beta[:, j], remaining))).sum(axis=1) / beta[:, j]
+    return tails
+
+
+def require_types_within(stream: EventStream, n_types: int) -> None:
+    if len(stream) and int(stream.types.max()) >= n_types:
+        raise ValueError(f"stream has event types outside 0..{n_types - 1}")
+
+
 def log_likelihood(stream: EventStream, params: HawkesParams) -> float:
     """Exact log-likelihood of `stream` under `params`.
 
     L = sum_k log lambda_{type_k}(t_k) - sum_i integral_0^horizon lambda_i(s) ds
 
-    The first sum uses the Ozaki (1979) recursion on the excitation matrix;
-    the compensator (second term) is closed-form for exponential kernels.
+    Intensities at events come from the vectorized kernel sums; the
+    compensator (second term) is closed-form for exponential kernels.
     """
-    if len(stream) and int(stream.types.max()) >= params.n_types:
-        raise ValueError(f"stream has event types outside 0..{params.n_types - 1}")
-
-    excitation = np.zeros((params.n_types, params.n_types))
-    last_event_t = 0.0
-    log_intensity_sum = 0.0
-    for t_k, k in zip(stream.times, stream.types, strict=True):
-        excitation = _decayed(excitation, params.beta, t_k - last_event_t)
-        intensity_k = params.mu[k] + excitation[k].sum()
-        if intensity_k <= 0:
+    total = 0.0
+    for i, target in enumerate(target_sums(stream, params.n_types, params.beta)):
+        intensity = params.mu[i] + target.kernel @ params.alpha[i]
+        if np.any(intensity <= 0):
             return float("-inf")
-        log_intensity_sum += np.log(intensity_k)
-        excitation[:, k] += params.alpha[:, k]
-        last_event_t = t_k
-
-    # integral of alpha_ij exp(-beta_ij (s - t)) over [t, horizon], summed
-    # over every type-j event t and every target type i.
-    compensator = params.mu.sum() * stream.horizon
-    for j in range(params.n_types):
-        remaining = stream.horizon - stream.times[stream.types == j]
-        decay_mass = 1.0 - np.exp(-np.outer(params.beta[:, j], remaining))
-        compensator += np.sum(params.branching_matrix[:, j] * decay_mass.sum(axis=1))
-
-    return float(log_intensity_sum - compensator)
+        total += float(np.log(intensity).sum())
+    tails = compensator_tails(stream, params.n_types, params.beta)
+    compensator = params.mu.sum() * stream.horizon + float((params.alpha * tails).sum())
+    return float(total - compensator)

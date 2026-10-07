@@ -23,6 +23,27 @@ that define it, then the implementation that makes them pass.
   - Poisson MLE equals event rates, with √n/T standard errors.
   - Non-positive decays and out-of-range types are rejected.
 
+### Implementation
+- `hawkes.py`: vectorized kernel sums (`target_sums`, `compensator_tails`).
+  The recursion is evaluated with blockwise cumulative sums, rebased so
+  `exp(beta * dt)` never overflows. `log_likelihood` now uses them instead
+  of a per-event Python loop; the O(n²) oracle test pins its correctness.
+- `hawkes_estimation.py` (new module, keeping estimation out of the model
+  module):
+  - `fit` with a fixed shared decay: the concave per-target problems are
+    solved by L-BFGS-B with the exact gradient, and standard errors come
+    from the observed information.
+  - `fit_decay`: profile likelihood over the decay, with an SE from the
+    profile's curvature.
+  - `fit_poisson`, `HawkesFit.aic`, `rescaled_residuals`, `ks_exponential`.
+- Dependencies: `scipy` (runtime), `scipy-stubs` (dev).
+- Test changes made during implementation:
+  - The estimation tests import from `hawkes_estimation` rather than
+    `hawkes`.
+  - Added `test_objective_gradient_matches_finite_differences` (written and
+    seen failing before `_objective` was factored out). The roadmap listed
+    it, but the first test commit missed it.
+
 ## Phase 1, order-level data and exact replay
 
 ### Tests (written first, failing)

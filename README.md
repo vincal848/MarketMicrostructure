@@ -24,15 +24,15 @@ The full argument, with references, is in
 
 ## Status
 
-Phase 0 (foundation) is complete. Phases 1–7 are planned in
+Phases 0–2 are complete. The remaining phases are planned in
 **[docs/ROADMAP.md](docs/ROADMAP.md)**, each with tests written before code
 and acceptance criteria measured on real data. Progress is logged in
 [CHANGELOG.md](CHANGELOG.md).
 
 | Milestone | What "done" means | State |
 |---|---|---|
-| M1 replay | ITCH day replayed with zero unknown ids and zero price-time violations | planned (Phase 1) |
-| M2 estimation | MLE recovers simulated parameters within 4 SE; residuals pass KS | planned (Phase 2) |
+| M1 replay | ITCH day replayed with zero unknown ids and zero price-time violations | **met**: 130,532 executions audited, 0 violations ([results](docs/RESULTS.md)) |
+| M2 estimation | MLE recovers simulated parameters within 4 SE; residuals pass KS | **met** (CI tests) |
 | M3 calibration | Six-type Hawkes fit to real flow beats Poisson; stylized facts compared | planned (Phases 3–4) |
 | M4 market makers | Calibrated baselines trade; PnL attributed, with CIs over ≥30 seeds | planned (Phase 5) |
 | M5 RL agent | Learned policy compared to baselines on held-out seeds | planned (Phase 6) |

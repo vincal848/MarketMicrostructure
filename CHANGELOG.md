@@ -46,6 +46,12 @@ that define it, then the implementation that makes them pass.
 
 ## Phase 1, order-level data and exact replay
 
+### Acceptance on real data (M1 met)
+- Full-day replay of SPY from the Nasdaq ITCH sample day 2019-01-30:
+  3,065,003 events, 130,532 audited executions, zero priority violations,
+  zero unknown ids, zero quantity mismatches, zero crossing adds, 230 s
+  wall time. Details in `docs/RESULTS.md`.
+
 ### Tests (written first, failing)
 - `test_book.py`: `execute_order` fills a named order anywhere in its queue
   and keeps queue priority on partial fills; over-execution is rejected

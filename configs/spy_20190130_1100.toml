@@ -43,8 +43,8 @@ size = 100
 inventory_cap = 500
 
 [rl]
-episodes = 300
-checkpoint_every = 25
+episodes = 200
+checkpoint_every = 40
 step_seconds = 1.0
 quote_size = 100
 max_inventory = 500

@@ -27,6 +27,7 @@ rerun reproduces results.json exactly.
 from __future__ import annotations
 
 import json
+import logging
 import platform
 import subprocess
 import tomllib
@@ -57,6 +58,9 @@ from microstructure.simulator import Agent
 
 if TYPE_CHECKING:
     from microstructure.rl import DQNConfig, Policy, TrainingLog
+
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigError(ValueError):
@@ -320,6 +324,7 @@ def _train_and_select(
             for seed in config.seeds.validation
         ]
         score = float(np.mean(pnls))
+        logger.info("episode %d: validation PnL %.0f over %d seeds", episode + 1, score, len(pnls))
         history.append({"episode": episode + 1, "validation_pnl": score})
         state = {k: v.detach().clone() for k, v in policy.network.state_dict().items()}
         checkpoints.append((score, episode + 1, state))
@@ -402,12 +407,20 @@ def run_experiment(config: ExperimentConfig, out_root: Path) -> Path:
         for gamma in sorted({spec.gamma for spec in as_specs})
     }
     as_params = {spec.name: by_gamma[spec.gamma] for spec in as_specs}
+    for gamma, params in by_gamma.items():
+        logger.info(
+            "Avellaneda-Stoikov gamma=%g: sigma=%.3f ticks/sqrt(s), kappa=%.3f /tick",
+            gamma,
+            params.sigma,
+            params.kappa,
+        )
     factories = {spec.name: _agent_factory(spec, scenario, as_params) for spec in config.agents}
     market = config.market
     table = evaluate(
         scenario, factories, config.seeds.test, market.attribution_horizon, market.maker_fee, market.taker_fee
     )
 
+    logger.info("baselines evaluated on %d test seeds", len(table.runs[config.agents[0].name]))
     run = _new_run_directory(out_root, config.name)
     results: dict[str, Any] = {}
     if config.rl is not None:

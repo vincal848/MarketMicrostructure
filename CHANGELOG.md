@@ -5,7 +5,28 @@ versions follow [Semantic Versioning](https://semver.org/). Each roadmap phase
 (see [docs/ROADMAP.md](docs/ROADMAP.md)) is logged in two steps: the tests
 that define it, then the implementation that makes them pass.
 
-## [Unreleased]: Phase 4, generative simulator
+## [Unreleased]: Phase 3b, multi-timescale kernels
+
+Added after Phase 3's first real-data calibration. With one exponential
+kernel, the fitted decay hit its upper bound (5000/s) in every window of
+both datasets. On 2019-01-30 SPY, 8% of consecutive session events share a
+nanosecond timestamp (mostly the cancel and add halves of replaces), 61% of
+gaps are under 100 µs, and 98% are under 100 ms. One exponential cannot
+span microseconds to seconds.
+
+### Tests (written first, failing)
+- `test_hawkes_multiscale.py`:
+  - Params hold U components as (U, K, K), and single kernels are promoted
+    to U = 1; the branching matrix sums the components; mismatched
+    component shapes are rejected.
+  - The multi-component likelihood equals the naive oracle.
+  - Two-scale simulation rates match the stationary intensity.
+  - A fit on a fixed decay grid recovers both scales within 4 SE.
+  - Two scales beat either single scale on AIC.
+  - Residuals under the true two-scale model pass KS.
+  - Online excitation adds every component's jump.
+
+## Phase 4, generative simulator
 
 ### Tests (written first, failing)
 - `test_hawkes.py`: `OnlineHawkes`. Thinning event rates match the

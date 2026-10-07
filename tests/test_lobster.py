@@ -7,11 +7,11 @@ import pytest
 from microstructure.lobster import (
     MESSAGE_COLUMNS,
     EventType,
+    depths,
     read_messages,
     read_orderbook,
     read_paired,
     to_events,
-    depths,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"

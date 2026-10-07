@@ -21,6 +21,11 @@ Orderbook file columns (4 x n_levels), for level i = 1 .. n_levels:
 Level 1 is the best bid/ask. An empty level is coded as price +-9999999999
 with size 0; rows like that are passed through unchanged.
 
+`to_events` converts messages to the normalized event model (`events.py`).
+A LOBSTER window opens with orders already resting, so replay starts from
+a snapshot (`replay.seed_book`) and messages about orders the window never
+added are redirected to that level's synthetic seed order.
+
 Column counts are checked against the raw file *before* names are attached.
 pandas, given fewer names than columns, silently moves the surplus leading
 columns into the index -- so reading a 2-level file as 1 level would return
@@ -32,11 +37,27 @@ from __future__ import annotations
 import os
 from enum import IntEnum
 
+import numpy as np
 import pandas as pd
+
+from microstructure.book import Depth, Level, Side
+from microstructure.events import (
+    AddOrder,
+    CancelOrder,
+    DeleteOrder,
+    ExecuteOrder,
+    HiddenTrade,
+    OrderEvent,
+    SystemEvent,
+    seed_order_id,
+)
 
 FilePath = str | os.PathLike[str]
 
 MESSAGE_COLUMNS = ["time", "type", "order_id", "size", "price", "direction"]
+
+EMPTY_LEVEL_PRICE = 9_999_999_999
+"""Absolute price LOBSTER writes for a level that does not exist."""
 
 
 class EventType(IntEnum):
@@ -104,3 +125,72 @@ def read_paired(
             "they must be aligned row for row"
         )
     return messages, book
+
+
+def to_events(messages: pd.DataFrame, first_row: int = 0) -> list[OrderEvent]:
+    """Convert message rows `first_row` onward into normalized events, one
+    event per row so they stay aligned with the orderbook file.
+
+    Orders not added within those rows (they were resting when the window,
+    or the replay, began) are redirected to the seed order for their side
+    and price. A full deletion of such an order becomes a partial cancel of
+    the seed by the order's own size. Cross trades (type 6) and halts
+    (type 7) leave the book alone and become `SystemEvent`s coded "cross"
+    and "halt".
+    """
+    known: set[int] = set()
+    events: list[OrderEvent] = []
+    rows = messages.iloc[first_row:]
+    for time, kind, order_id, size, price, direction in zip(
+        rows["time"],
+        rows["type"],
+        rows["order_id"],
+        rows["size"],
+        rows["price"],
+        rows["direction"],
+        strict=True,
+    ):
+        ts = round(float(time) * 1e9)
+        side = Side.BID if direction == Direction.BUY else Side.ASK
+        oid, qty, px = int(order_id), int(size), int(price)
+        target = oid if oid in known else seed_order_id(side, px)
+        match EventType(kind):
+            case EventType.NEW_LIMIT_ORDER:
+                known.add(oid)
+                events.append(AddOrder(ts=ts, order_id=oid, side=side, price=px, qty=qty))
+            case EventType.PARTIAL_CANCELLATION:
+                events.append(CancelOrder(ts=ts, order_id=target, qty=qty))
+            case EventType.FULL_DELETION if oid in known:
+                known.discard(oid)
+                events.append(DeleteOrder(ts=ts, order_id=oid))
+            case EventType.FULL_DELETION:
+                events.append(CancelOrder(ts=ts, order_id=target, qty=qty))
+            case EventType.VISIBLE_EXECUTION:
+                events.append(ExecuteOrder(ts=ts, order_id=target, qty=qty))
+            case EventType.HIDDEN_EXECUTION:
+                events.append(HiddenTrade(ts=ts, resting_side=side, price=px, qty=qty))
+            case EventType.CROSS_TRADE:
+                events.append(SystemEvent(ts=ts, code="cross"))
+            case EventType.TRADING_HALT:
+                events.append(SystemEvent(ts=ts, code="halt"))
+    return events
+
+
+def depths(orderbook: pd.DataFrame, n_levels: int) -> list[Depth]:
+    """Each orderbook row as (bid levels, ask levels), best first, with
+    LOBSTER's empty-level placeholders dropped."""
+    values = orderbook[orderbook_columns(n_levels)].to_numpy(dtype=np.int64)
+    ask_px, ask_sz = values[:, 0::4], values[:, 1::4]
+    bid_px, bid_sz = values[:, 2::4], values[:, 3::4]
+
+    def side_levels(prices: np.ndarray, sizes: np.ndarray) -> list[Level]:
+        return [
+            (int(p), int(q))
+            for p, q in zip(prices, sizes, strict=True)
+            if q > 0 and abs(int(p)) != EMPTY_LEVEL_PRICE
+        ]
+
+    return [
+        (side_levels(bid_px[row], bid_sz[row]), side_levels(ask_px[row], ask_sz[row]))
+        for row in range(values.shape[0])
+    ]

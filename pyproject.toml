@@ -15,6 +15,9 @@ dependencies = [
     "pandas>=2.1",
 ]
 
+[project.scripts]
+microstructure = "microstructure.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "mypy>=1.10",
@@ -28,7 +31,10 @@ packages = ["src/microstructure"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["--strict-markers", "-ra"]
+addopts = ["--strict-markers", "-ra", "-m", "not data"]
+markers = [
+    "data: needs a local market-data file (skipped in CI; run with -m data)",
+]
 
 [tool.ruff]
 line-length = 110

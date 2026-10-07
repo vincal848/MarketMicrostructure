@@ -18,7 +18,7 @@ from __future__ import annotations
 import operator
 from bisect import insort
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 
@@ -58,6 +58,9 @@ class Fill:
 
 Level = tuple[int, int]
 """(price, total resting quantity) at one price level."""
+
+Depth = tuple[list[Level], list[Level]]
+"""(bid levels, ask levels), each best first."""
 
 
 class _BookSide:
@@ -127,6 +130,17 @@ class _BookSide:
             self._drop_level(price)
         return qty, finished
 
+    def qty_ahead_of(self, order: Order) -> int:
+        ahead = 0
+        for queued in self._levels[order.price]:
+            if queued is order:
+                return ahead
+            ahead += queued.qty
+        raise AssertionError(f"order {order.order_id} missing from its level")
+
+    def is_at_front_of_best(self, order: Order) -> bool:
+        return order.price == self._prices[-1] and self._levels[order.price][0] is order
+
     def top_levels(self, n_levels: int) -> list[Level]:
         best_first = reversed(self._prices[-n_levels:]) if n_levels > 0 else []
         return [(p, sum(o.qty for o in self._levels[p])) for p in best_first]
@@ -152,6 +166,28 @@ class OrderBook:
     def __init__(self) -> None:
         self._sides = {Side.BID: _BookSide(Side.BID), Side.ASK: _BookSide(Side.ASK)}
         self._orders: dict[int, Order] = {}
+
+    def __contains__(self, order_id: object) -> bool:
+        return order_id in self._orders
+
+    def resting_order(self, order_id: int) -> Order:
+        """A copy of the resting order; mutating it does not touch the book."""
+        return replace(self._orders[order_id])
+
+    def queue_ahead(self, order_id: int) -> int:
+        """Shares resting ahead of `order_id` at its own price."""
+        order = self._orders[order_id]
+        return self._sides[order.side].qty_ahead_of(order)
+
+    def is_at_front_of_best(self, order_id: int) -> bool:
+        """Whether `order_id` is first in the queue at its side's best price,
+        i.e. the next order an incoming market order would hit."""
+        order = self._orders[order_id]
+        return self._sides[order.side].is_at_front_of_best(order)
+
+    def would_cross(self, side: Side, price: int) -> bool:
+        """Whether a limit order on `side` at `price` would trade on arrival."""
+        return self._sides[Side(side).opposite].is_marketable_against(price)
 
     def best_bid(self) -> int | None:
         return self._sides[Side.BID].best()
@@ -200,7 +236,26 @@ class OrderBook:
         else:
             order.qty -= qty
 
-    def depth_snapshot(self, n_levels: int) -> tuple[list[Level], list[Level]]:
+    def execute_order(self, order_id: int, qty: int) -> Fill:
+        """Trade `qty` shares of a specific resting order at its price.
+
+        This is the exchange's view of a match: the venue names the resting
+        order that traded, which need not be the one `market_order` would
+        pick (replay audits that separately). Partial executions keep the
+        order's queue position.
+        """
+        order = self._orders[order_id]
+        qty = _positive_qty(qty)
+        if qty > order.qty:
+            raise ValueError(f"execution of {qty} exceeds order {order_id}'s resting {order.qty}")
+        if qty == order.qty:
+            self._sides[order.side].remove(order)
+            del self._orders[order_id]
+        else:
+            order.qty -= qty
+        return Fill(order.price, qty, order_id)
+
+    def depth_snapshot(self, n_levels: int) -> Depth:
         """Top `n_levels` per side as (price, total_qty), best first."""
         return (
             self._sides[Side.BID].top_levels(n_levels),

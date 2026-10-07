@@ -33,6 +33,29 @@ that define it, then the implementation that makes them pass.
 - New fixture `seeded_message.csv`/`seeded_orderbook.csv`: a 2-level window
   whose first snapshot already holds orders added before the window.
 
+### Implementation
+- `events.py`: frozen, validated event dataclasses; the `OrderEvent` union;
+  `seed_order_id`.
+- `book.py`: `execute_order`, `queue_ahead`, `is_at_front_of_best`,
+  `would_cross`, `resting_order`, `__contains__`; `Depth` alias.
+- `itch.py`: chunked streaming decoder for ITCH 5.0. Other symbols'
+  messages are skipped after reading two bytes; gzip is detected from magic
+  bytes.
+- `replay.py`: `Replayer`/`replay` with a `ReplayReport` audit (priority
+  violations, unknown ids, quantity mismatches, crossing adds, hidden
+  trades, executions with price); `seed_book`; `verify_snapshots`.
+- `lobster.py`: `to_events` (redirects pre-window ids onto seed orders; maps
+  type 6/7 to `SystemEvent("cross"/"halt")` so rows stay aligned) and
+  `depths`.
+- `cli.py`: `microstructure replay-itch` writes a JSON audit report and
+  exits 1 when the audit is not clean. It is registered as a console script.
+- Test changes made during implementation:
+  - `verify_snapshots` takes `n_levels` explicitly. Inferring the depth
+    from snapshots would break when no row has every level filled.
+  - Added an oversized-cancel quantity-mismatch test, `test_cli.py`, and
+    `test_real_data.py`. The last is marked `data`: skipped unless the ITCH
+    file exists locally, and deselected by default.
+
 ## [0.2.0] - 2026-10-07: Phase 0, foundation
 
 Restructured from flat scripts to a typed package after an architecture and

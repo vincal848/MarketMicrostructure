@@ -48,7 +48,9 @@ def order_executed_with_price(
     locate: int, ts: int, ref: int, shares: int, price: int, printable: bool, match: int = 1
 ) -> bytes:
     flag = b"Y" if printable else b"N"
-    return _header(b"C", locate, ts) + struct.pack(">QIQ", ref, shares, match) + flag + struct.pack(">I", price)
+    return (
+        _header(b"C", locate, ts) + struct.pack(">QIQ", ref, shares, match) + flag + struct.pack(">I", price)
+    )
 
 
 def order_cancel(locate: int, ts: int, ref: int, shares: int) -> bytes:

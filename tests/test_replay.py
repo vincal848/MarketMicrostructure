@@ -54,6 +54,12 @@ def test_execution_away_from_the_best_price_is_a_priority_violation() -> None:
     assert result.report.priority_violations == 1
 
 
+def test_oversized_cancel_is_a_quantity_mismatch() -> None:
+    result = replay([*_two_sided(), CancelOrder(ts=5, order_id=3, qty=11)])
+    assert result.report.quantity_mismatches == 1
+    assert 3 not in result.book
+
+
 def test_unknown_order_reference_is_counted_not_raised() -> None:
     result = replay([*_two_sided(), DeleteOrder(ts=5, order_id=42), ExecuteOrder(ts=6, order_id=43, qty=1)])
     assert result.report.unknown_order_refs == 2
@@ -111,18 +117,18 @@ def test_seed_book_rebuilds_depth() -> None:
 
 def test_lobster_fixture_replays_to_every_snapshot_exactly() -> None:
     messages, orderbook = read_paired(FIXTURES / "tiny_message.csv", FIXTURES / "tiny_orderbook.csv", 1)
-    assert verify_snapshots(to_events(messages), depths(orderbook, 1), OrderBook()) == []
+    assert verify_snapshots(to_events(messages), depths(orderbook, 1), OrderBook(), n_levels=1) == []
 
 
 def test_lobster_window_that_opens_with_resting_orders_replays_exactly() -> None:
     messages, orderbook = read_paired(FIXTURES / "seeded_message.csv", FIXTURES / "seeded_orderbook.csv", 2)
     snapshots = depths(orderbook, 2)
     events = to_events(messages, first_row=1)
-    assert verify_snapshots(events, snapshots[1:], seed_book(snapshots[0])) == []
+    assert verify_snapshots(events, snapshots[1:], seed_book(snapshots[0]), n_levels=2) == []
 
 
 def test_snapshot_mismatches_are_reported_by_row() -> None:
     messages, orderbook = read_paired(FIXTURES / "tiny_message.csv", FIXTURES / "tiny_orderbook.csv", 1)
     snapshots = depths(orderbook, 1)
     snapshots[2] = ([(585000, 999)], snapshots[2][1])
-    assert verify_snapshots(to_events(messages), snapshots, OrderBook()) == [2]
+    assert verify_snapshots(to_events(messages), snapshots, OrderBook(), n_levels=1) == [2]

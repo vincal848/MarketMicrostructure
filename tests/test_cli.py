@@ -5,6 +5,7 @@ from pathlib import Path
 
 import itch_writer as w
 import numpy as np
+from experiment_fixtures import CONFIG, write_artifacts
 from mbp_writer import scenario
 
 from microstructure.cli import main
@@ -85,3 +86,83 @@ def test_calibrate_mbp10_fits_each_window(tmp_path: Path) -> None:
     result = json.loads(out.read_text())
     assert result["classified_events_in_session"] == 10
     assert len(result["windows"]) == 1
+
+
+# --- Phase 7: snapshot, stylized facts, simulation and experiments -----------
+
+
+def test_depth_itch_writes_the_book_at_a_time(tmp_path: Path) -> None:
+    out = tmp_path / "depth.json"
+    feed = _busy_minute(tmp_path / "day.itch")
+    assert main(["depth-itch", str(feed), "--symbol", "SPY", "--at", "10:01", "--out", str(out)]) == 0
+    depth = json.loads(out.read_text())
+    assert depth["bids"]
+    assert depth["asks"]
+    assert depth["bids"][0][0] < depth["asks"][0][0]
+
+
+def test_stylized_itch_summarizes_the_real_tape(tmp_path: Path) -> None:
+    out = tmp_path / "real.json"
+    feed = _busy_minute(tmp_path / "day.itch")
+    assert (
+        main(
+            [
+                "stylized-itch",
+                str(feed),
+                "--symbol",
+                "SPY",
+                "--start",
+                "10:00",
+                "--end",
+                "10:01",
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    summary = json.loads(out.read_text())
+    assert summary["quote_updates"] > 0
+    assert len(summary["spread_distribution"]) == 10
+
+
+def test_simulate_checks_rates_and_summarizes_stylized_facts(tmp_path: Path) -> None:
+    write_artifacts(tmp_path)
+    (tmp_path / "experiment.toml").write_text(CONFIG)
+    out = tmp_path / "sim.json"
+    assert (
+        main(
+            [
+                "simulate",
+                str(tmp_path / "experiment.toml"),
+                "--seeds",
+                "0:2",
+                "--horizon",
+                "60",
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    result = json.loads(out.read_text())
+    assert len(result["rate_ratio"]) == 6  # simulated / stationary intensity, per type
+    assert len(result["seeds"]) == 2
+    assert "spread_distribution" in result["seeds"][0]["stylized"]
+
+
+def test_experiment_command_writes_a_run_directory(tmp_path: Path) -> None:
+    write_artifacts(tmp_path)
+    (tmp_path / "experiment.toml").write_text(CONFIG)
+    assert main(["experiment", str(tmp_path / "experiment.toml"), "--out", str(tmp_path / "runs")]) == 0
+    (run,) = (tmp_path / "runs").iterdir()
+    assert (run / "manifest.json").exists()
+    assert (run / "results.json").exists()
+
+
+def test_bench_reports_throughput(tmp_path: Path) -> None:
+    out = tmp_path / "bench.json"
+    assert main(["bench", "--scale", "0.01", "--out", str(out)]) == 0
+    result = json.loads(out.read_text())
+    assert {"book_ops_per_second", "replay_events_per_second", "simulator_events_per_second"} <= set(result)
+    assert all(v > 0 for v in result.values())

@@ -5,7 +5,32 @@ versions follow [Semantic Versioning](https://semver.org/). Each roadmap phase
 (see [docs/ROADMAP.md](docs/ROADMAP.md)) is logged in two steps: the tests
 that define it, then the implementation that makes them pass.
 
-## [Unreleased]: Phase 6, reinforcement-learning market maker
+## [Unreleased]: Phase 7, productionization
+
+### Tests (written first, failing)
+- `test_properties.py` (Hypothesis): under any sequence of limit, market,
+  cancel and execute operations, the book is never crossed, levels stay
+  sorted and positive, and resting volume equals the volume conservation
+  says should rest. Queue position never exceeds the level's other volume.
+  These characterize the existing book and passed immediately.
+- `test_experiment.py`:
+  - TOML configs load into validated dataclasses; overlapping seed ranges,
+    unknown keys and unknown agent kinds are rejected.
+  - A scenario is built from the calibration JSON, marks `.npz` and depth
+    JSON.
+  - An experiment writes a run directory (manifest with git SHA, Python and
+    package versions; results JSON; Markdown summary) whose results
+    reproduce exactly on a rerun.
+  - With an `[rl]` table, a DQN is trained, the best validation checkpoint
+    selected, and that checkpoint tested against every baseline.
+- `test_replay.py`: `depth_at` replays strictly before a timestamp.
+- `test_cli.py`: `depth-itch`, `stylized-itch`, `simulate` (rate ratio
+  against the stationary intensity, plus stylized facts per seed),
+  `experiment`, and `bench`.
+- `tests/experiment_fixtures.py`: the shared synthetic calibration
+  artifacts.
+
+## Phase 6, reinforcement-learning market maker
 
 ### Tests (written first, failing)
 - `test_env.py`:

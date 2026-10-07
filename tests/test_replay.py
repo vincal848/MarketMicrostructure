@@ -132,3 +132,14 @@ def test_snapshot_mismatches_are_reported_by_row() -> None:
     snapshots = depths(orderbook, 1)
     snapshots[2] = ([(585000, 999)], snapshots[2][1])
     assert verify_snapshots(to_events(messages), snapshots, OrderBook(), n_levels=1) == [2]
+
+
+# --- Phase 7: depth snapshot at a time ----------------------------------------
+
+
+def test_depth_at_replays_up_to_but_not_including_the_time() -> None:
+    from microstructure.replay import depth_at
+
+    events = [*_two_sided(), CancelOrder(ts=10, order_id=3, qty=4)]
+    assert depth_at(events, ts=10, n_levels=5) == ([(100, 20), (99, 10)], [(101, 10)])
+    assert depth_at(events, ts=11, n_levels=1) == ([(100, 20)], [(101, 10)])

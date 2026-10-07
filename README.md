@@ -1,167 +1,93 @@
 # Market Microstructure
 
-[![tests](https://github.com/vincal848/MarketMicrostructure/actions/workflows/tests.yml/badge.svg)](https://github.com/vincal848/MarketMicrostructure/actions/workflows/tests.yml)
+[![ci](https://github.com/vincal848/MarketMicrostructure/actions/workflows/ci.yml/badge.svg)](https://github.com/vincal848/MarketMicrostructure/actions/workflows/ci.yml)
 
-**Hawkes-driven limit order book simulator with competing market makers.**
+**A Hawkes-driven limit order book simulator for evaluating market makers,
+calibrated to and validated against real Nasdaq order flow.**
 
-I want a discrete-event, tick-driven limit order book simulation built on
-real LOBSTER (NASDAQ ITCH-derived) sample data, with several market makers
-quoting into it at once. The original framing of this repository was just
-"simulate a LOB with market makers"; what makes it a specific project rather
-than a vague one is modelling order flow itself as a multivariate Hawkes
-process -- fit by maximum likelihood to LOBSTER data rather than assumed --
-and eventually replacing the textbook market maker with a reinforcement
-learning agent that quotes against that simulated flow. Latency, inventory
-limits, and adverse selection all fall out of that setup rather than being
-bolted on separately.
+Historical data cannot tell you how a market maker would have done. Its
+orders would have changed the book, its queue position is unknown, and the
+fills it would have received are exactly the ones followed by adverse price
+moves. This project builds the standard alternative:
 
-This is a scaffold, not a working simulator yet. The point right now is to
-get the pieces that the first tests need right -- the book engine, the
-Hawkes machinery, the Avellaneda-Stoikov formulas, the LOBSTER parser -- and
-to write down what "done" means for each later milestone before I build it.
+1. Reconstruct real order books message by message.
+2. Fit a multivariate Hawkes process to the order flow.
+3. Simulate that flow forward, with market makers quoting into the same
+   book.
 
-## Motivation
+The market makers are closed-form (Avellaneda-Stoikov) and learned
+(reinforcement learning), and they are compared on identical simulated flow
+with PnL split into spread capture, adverse selection and inventory.
 
-A limit order book is a queueing system: orders arrive, rest, get matched
-or cancelled, in a strict price-time priority. Most LOB simulators either
-replay historical data verbatim (so you can't ask "what if a market maker
-had been quoting here") or generate order flow from an unconditional Poisson
-process (so bursts of market orders and clustered cancellations -- the stuff
-that actually drives adverse selection -- don't show up). A multivariate
-Hawkes process is the natural middle ground: each event type (market buy,
-market sell, limit adds at/inside/away from the best, cancels) has a
-baseline rate plus self- and cross-excitation from recent events of every
-type, and it can be calibrated to a real order flow by maximum likelihood
-rather than hand-tuned. That gives a simulator that is generative (I can run
-it forward under a market maker's influence) but still anchored to data
-(the calibration step has to match LOBSTER's own statistics before I trust
-anything built on top of it).
-
-## Method
-
-**Book.** Price-time priority, integer tick prices, FIFO within a level.
-Four operations: add a limit order (crossing orders match immediately, the
-remainder rests), cancel (full or partial), a market order that walks
-levels until filled or the book runs dry, and a depth snapshot to N levels.
-This is `lob.py`.
-
-**Order flow.** A multivariate Hawkes process over event types (market
-buy/sell, limit add at/inside/away from the best, cancel -- see
-`docs/DESIGN.md` for the full table). Exponential kernels, so the intensity
-of type `i` is
-
-```
-lambda_i(t) = mu_i + sum_j sum_{t_k^j < t} alpha_ij * exp(-beta_ij (t - t_k^j))
-```
-
-Simulated by Ogata's thinning algorithm; calibrated to LOBSTER by maximum
-likelihood. This is `hawkes.py`.
-
-**Market makers.** Avellaneda-Stoikov as the baseline: closed-form
-reservation price and optimal spread under exponential utility and Poisson
-fill intensity. An inventory-limited variant on top of that (refuse to quote
-further on the side that would breach a position cap). Latency modelled as
-a fixed or random delay between an agent deciding to quote and that quote
-actually reaching the book, which matters a lot once several market makers
-are racing each other. Eventually a reinforcement-learning agent that
-quotes directly against the simulated Hawkes flow instead of using the
-closed-form formulas. This is `agents.py`.
-
-**Data.** LOBSTER message and orderbook files, parsed into pandas
-DataFrames and checked for row alignment. This is `lobster.py`.
-
-## Data
-
-[LOBSTER](https://lobsterdata.com) provides free sample files (one trading
-day, a handful of large-cap tickers) reconstructed from NASDAQ ITCH, split
-into two CSVs per day with no header, aligned row for row:
-
-- **Message file** (6 columns): `time, type, order_id, size, price,
-  direction`. `type` is 1 (new limit order), 2 (partial cancellation), 3
-  (full deletion), 4 (visible execution), 5 (hidden execution), 6 (cross
-  trade), or 7 (trading halt). `price` is dollars x 10000, as an integer.
-  `direction` is 1 (buy) or -1 (sell) and refers to the resting limit
-  order's side, so an aggressive market buy appears as an execution of a
-  sell limit order.
-- **Orderbook file** (4 x N columns, N = requested depth): `ask_price_i,
-  ask_size_i, bid_price_i, bid_size_i` for level `i = 1..N`, best first.
-
-Full column specs are documented in `lobster.py`'s module docstring. Sample
-files live under `data/`, which is gitignored -- LOBSTER's free tier is
-redistributable for personal use only, so they are downloaded locally
-rather than committed. `tests/fixtures/` holds a tiny, hand-made CSV pair in
-the same format so the parser tests run without any real data or network
-access.
-
-## Milestones
-
-- [ ] **M1** -- Book engine + replay of LOBSTER messages reproduces
-      LOBSTER's own orderbook snapshots exactly, message by message.
-- [ ] **M2** -- Hawkes simulation + MLE recovers known parameters: simulate
-      from a chosen `(mu, alpha, beta)`, fit, and check the fit lands close
-      to the truth.
-- [ ] **M3** -- Calibrate the Hawkes process to the LOBSTER sample data
-      itself (bucketing real events into the type table in
-      `docs/DESIGN.md`).
-- [ ] **M4** -- Market makers (Avellaneda-Stoikov baseline, inventory-limited
-      variant, latency) quoting into the simulated book, with PnL,
-      inventory, and adverse-selection metrics tracked per agent.
-- [ ] **M5** -- Reinforcement-learning agent trained against the simulated
-      Hawkes flow, compared against the M4 baselines.
-
-## Success metrics
-
-- **M1:** exact match against LOBSTER's own orderbook snapshot file --
-  not "close", every price and size at every level, after every message.
-- **M2:** parameter recovery -- fitted `(mu, alpha, beta)` within the known
-  rate of statistical error of the simulated truth, and the log-likelihood
-  at the fit at least as high as at the truth.
-- **M3:** stylised facts reproduced out of sample -- spread distribution,
-  the signature plot (realized variance vs sampling frequency), and
-  order-flow autocorrelation, compared against the same statistics computed
-  directly on LOBSTER data.
-- **M4:** market maker PnL decomposed into spread capture vs adverse
-  selection (the standard split: how much of PnL comes from the
-  bid-ask spread itself vs from being run over by informed flow), per agent,
-  per run.
-- **M5:** the RL agent's PnL/inventory/adverse-selection profile against the
-  M4 baselines under identical simulated flow.
+The full argument, with references, is in
+**[docs/MOTIVATION.md](docs/MOTIVATION.md)**.
 
 ## Status
 
-Scaffold. M1 in progress.
+Phase 0 (foundation) is complete. Phases 1–7 are planned in
+**[docs/ROADMAP.md](docs/ROADMAP.md)**, each with tests written before code
+and acceptance criteria measured on real data. Progress is logged in
+[CHANGELOG.md](CHANGELOG.md).
+
+| Milestone | What "done" means | State |
+|---|---|---|
+| M1 replay | ITCH day replayed with zero unknown ids and zero price-time violations | planned (Phase 1) |
+| M2 estimation | MLE recovers simulated parameters within 4 SE; residuals pass KS | planned (Phase 2) |
+| M3 calibration | Six-type Hawkes fit to real flow beats Poisson; stylized facts compared | planned (Phases 3–4) |
+| M4 market makers | Calibrated baselines trade; PnL attributed, with CIs over ≥30 seeds | planned (Phase 5) |
+| M5 RL agent | Learned policy compared to baselines on held-out seeds | planned (Phase 6) |
 
 ## Quick start
 
 ```bash
-pip install -r requirements-dev.txt
-pytest tests -q
+pip install -e ".[dev]"
+pytest -q                 # tests
+ruff check . && mypy      # lint + strict types
+```
+
+```python
+from microstructure.book import OrderBook, Side
+from microstructure.hawkes import HawkesParams, simulate, log_likelihood
+from microstructure.avellaneda_stoikov import ASParams, quotes
+
+book = OrderBook()
+book.add_limit_order(1, Side.ASK, price=10_001, qty=100)
+fills, leftover = book.market_order(Side.BID, 60)
+
+params = HawkesParams(mu=[0.3, 0.2], alpha=[[0.4, 0.1], [0.2, 0.3]], beta=[[1.0, 1.0], [1.0, 1.0]])
+stream = simulate(params, horizon=1_000.0, seed=0)
+print(params.spectral_radius(), len(stream), log_likelihood(stream, params))
+
+# Everything in ticks: sigma in ticks/sqrt(s), kappa in 1/ticks.
+print(quotes(mid=10_000.0, inventory=50, time_to_go=0.5, params=ASParams(gamma=0.001, sigma=2.0, kappa=0.5)))
 ```
 
 ## Repository guide
 
 | Path | Contents |
 |---|---|
-| `lob.py` | Price-time priority order book: add, cancel, market order, depth snapshot |
-| `hawkes.py` | Multivariate Hawkes: thinning simulation, stationary intensity, log-likelihood, MLE stub |
-| `agents.py` | Avellaneda-Stoikov reservation price and spread; agent-loop stub |
-| `lobster.py` | LOBSTER message/orderbook CSV parser |
-| `tests/` | One test file per module, plus `tests/fixtures/` for the LOBSTER parser |
-| `docs/DESIGN.md` | Event-type table and the Hawkes intensity formula |
-| `legacy/cmu_ml2_meta_dqn/` | Earlier prototype of M5: CMU ML2 Meta-DQN market maker on SPY ITCH data, with results and caveats (superseded) |
+| `src/microstructure/book.py` | Price-time priority order book |
+| `src/microstructure/hawkes.py` | Multivariate exponential Hawkes: validated params, Ogata thinning, exact likelihood |
+| `src/microstructure/avellaneda_stoikov.py` | Closed-form reservation price, spread and quotes, with a units contract |
+| `src/microstructure/lobster.py` | LOBSTER message/orderbook parser |
+| `tests/` | One test module per source module; `fixtures/` holds hand-made data files |
+| `docs/MOTIVATION.md` | Why the project exists, why Hawkes, why the comparison is designed this way |
+| `docs/ARCHITECTURE.md` | Layering rules, module contracts, event alphabet, design decisions |
+| `docs/ROADMAP.md` | Phased plan with tests-first acceptance criteria |
+| `legacy/cmu_ml2_meta_dqn/` | Earlier prototype of M5 (CMU ML2 Meta-DQN on SPY), superseded; its defects shaped this design |
 
-## Notes
+## Data
 
-- `legacy/cmu_ml2_meta_dqn/` is an earlier RL market maker (Double DQN with
-  an LSTM that retunes reward penalties) from a CMU course project. It uses
-  a hand-set fill model rather than simulated order flow. Its README lists
-  what that setup can and cannot show, and those limits are what M4 and M5
-  are designed to fix.
+No market data is committed: licensed or multi-gigabyte files live outside
+the repository, and CI runs on hand-made fixtures in the same formats.
 
-- No real LOBSTER data is in this repository or in CI. The parser is tested
-  against a tiny fixture built by hand; M1's exact-snapshot-match milestone
-  is the point at which real sample data gets downloaded and used locally.
-- `agents.py`'s closed-form functions assume the Avellaneda-Stoikov setup
-  exactly as published (constant volatility, exponential utility, Poisson
-  fill intensity at a fixed `kappa`) -- known simplifications, not something
-  this scaffold tries to relax yet.
+- **Nasdaq TotalView-ITCH 5.0.** Public full-day sample files from
+  `emi.nasdaq.com/ITCH/`. This is the primary order-level source.
+- **LOBSTER.** Message and orderbook CSVs. An account is required, and the
+  parser is fixture-tested.
+- **Databento MBP-10.** Top-10 price-level snapshots and trades, used as a
+  cross-era check (see the roadmap for why it cannot support exact replay).
+
+## License
+
+MIT © 2026 Caleb Vinson

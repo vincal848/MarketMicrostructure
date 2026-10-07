@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "microstructure"
+version = "0.2.0"
+description = "Hawkes-driven limit order book simulator with competing market makers"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Caleb Vinson" }]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.10",
+    "pandas-stubs>=2.1",
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/microstructure"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "-ra"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = ["legacy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "N", "PT", "NPY"]
+# R and other single-letter names follow the Hawkes/AS papers' notation.
+ignore = ["N802", "N803", "N806"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]

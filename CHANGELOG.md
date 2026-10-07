@@ -5,7 +5,26 @@ versions follow [Semantic Versioning](https://semver.org/). Each roadmap phase
 (see [docs/ROADMAP.md](docs/ROADMAP.md)) is logged in two steps: the tests
 that define it, then the implementation that makes them pass.
 
-## [Unreleased]: Phase 5, market makers and PnL attribution
+## [Unreleased]: Phase 6, reinforcement-learning market maker
+
+### Tests (written first, failing)
+- `test_env.py`:
+  - `reset` returns a finite float32 observation of the declared size.
+  - Episodes end exactly at the horizon, and stepping after the end
+    requires a reset.
+  - The same seed and actions reproduce the trajectory.
+  - The reward equals the scaled mark-to-market change minus λ·(q/size)².
+  - Action offsets place quotes the stated number of ticks behind the
+    touch.
+  - With zero latency, inventory never exceeds the cap.
+  - Episode metrics attribute PnL exactly.
+  - `MarketSimulator.advance` in 1-second steps reproduces a single
+    `run`.
+- `test_rl.py` (skipped without PyTorch): the replay buffer overwrites the
+  oldest entries and samples batches; Double DQN learns the best arm of a
+  noisy 4-armed bandit; training is bit-for-bit reproducible from its seed.
+
+## Phase 5, market makers and PnL attribution
 
 ### Tests (written first, failing)
 - `test_accounting.py`:

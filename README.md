@@ -1,6 +1,6 @@
 # Market Microstructure
 
-[![ci](https://github.com/vincal848/MarketMicrostructure/actions/workflows/ci.yml/badge.svg)](https://github.com/vincal848/MarketMicrostructure/actions/workflows/ci.yml)
+[![ci](https://github.com/vincal848/market-microstructure/actions/workflows/ci.yml/badge.svg)](https://github.com/vincal848/market-microstructure/actions/workflows/ci.yml)
 
 **A Hawkes-driven limit order book simulator for evaluating market makers,
 calibrated to and validated against real Nasdaq order flow.**

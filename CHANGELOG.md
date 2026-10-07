@@ -5,7 +5,38 @@ versions follow [Semantic Versioning](https://semver.org/). Each roadmap phase
 (see [docs/ROADMAP.md](docs/ROADMAP.md)) is logged in two steps: the tests
 that define it, then the implementation that makes them pass.
 
-## [Unreleased]: Phase 2, Hawkes estimation
+## [Unreleased]: Phase 3, event classification and calibration
+
+### Tests (written first, failing)
+- `test_flow.py`:
+  - A sweep across levels at one timestamp is a single MB; executions at
+    different times stay separate; executing a resting bid is an MS.
+  - Adds are split into LA/LI/LD by their position relative to the best,
+    with tick distances; the first order on an empty side is LA.
+  - Cancels record their distance from the best.
+  - A replace is C followed by an add, classified against the book after
+    the cancel.
+  - Hidden trades are signed by price against mid, and at-mid trades are
+    counted as unsigned; cross executions are excluded, printable ones
+    included.
+  - Unknown ids are skipped and reported.
+  - `between` uses half-open windows; `to_stream` produces seconds from the
+    window start; `marks` collects sizes and distances.
+- `test_calibration.py`:
+  - `session_windows` tiles the session.
+  - A known six-type process is recovered end to end (decay within 4 SE,
+    AIC better than Poisson, KS per type).
+  - Empty types are tolerated.
+  - Summaries are JSON-serializable.
+- `test_databento.py`, with a generated MBP-10 CSV reproducing the real
+  quirks:
+  - side-`N` adds; a replace published only as its add;
+  - fills whose level decrease arrives on a later record, or on a trade
+    record; merged same-time trades; an unsigned trade signed by mid;
+  - the 11th level sliding into the top 10 is not an add;
+  - New York local timestamps; chunked reading does not split events.
+
+## Phase 2, Hawkes estimation
 
 ### Tests (written first, failing)
 - `test_hawkes_estimation.py`:

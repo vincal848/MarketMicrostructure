@@ -4,7 +4,7 @@ log-likelihood."""
 import numpy as np
 import pytest
 
-from microstructure.hawkes import EventStream, HawkesParams, log_likelihood, simulate
+from microstructure.hawkes import EventStream, HawkesParams, OnlineHawkes, log_likelihood, simulate
 
 
 def test_spectral_radius_of_the_branching_matrix() -> None:
@@ -84,3 +84,33 @@ def test_log_likelihood_rejects_types_the_model_does_not_have() -> None:
     stream = EventStream([1.0], [3], horizon=2.0)
     with pytest.raises(ValueError, match="types"):
         log_likelihood(stream, HawkesParams([0.5], [[0.3]], [[1.0]]))
+
+
+# --- Phase 4: online simulation (agents can excite the flow) ------------------
+
+
+def test_online_simulation_matches_the_stationary_intensity() -> None:
+    params = HawkesParams([0.3, 0.2], [[0.4, 0.1], [0.2, 0.3]], [[1.0, 1.0], [1.0, 1.0]])
+    online = OnlineHawkes(params, np.random.default_rng(1))
+    counts = np.zeros(2)
+    horizon = 20000.0
+    while (event := online.next_event(until=horizon)) is not None:
+        counts[event[1]] += 1
+    assert counts / horizon == pytest.approx(params.stationary_intensity(), rel=0.1)
+    assert online.now == horizon
+
+
+def test_external_excitation_raises_intensity_by_alpha() -> None:
+    params = HawkesParams([0.3, 0.2], [[0.4, 0.1], [0.2, 0.3]], [[1.0, 1.0], [1.0, 1.0]])
+    online = OnlineHawkes(params, np.random.default_rng(2))
+    online.advance_to(5.0)
+    before = online.intensity()
+    online.excite(1)
+    np.testing.assert_allclose(online.intensity() - before, params.alpha[:, 1])
+
+
+def test_next_event_stops_at_the_requested_time() -> None:
+    params = HawkesParams([1e-6], [[0.0]], [[1.0]])  # essentially silent
+    online = OnlineHawkes(params, np.random.default_rng(3))
+    assert online.next_event(until=2.5) is None
+    assert online.now == 2.5

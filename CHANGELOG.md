@@ -5,7 +5,33 @@ versions follow [Semantic Versioning](https://semver.org/). Each roadmap phase
 (see [docs/ROADMAP.md](docs/ROADMAP.md)) is logged in two steps: the tests
 that define it, then the implementation that makes them pass.
 
-## [Unreleased]: Phase 3, event classification and calibration
+## [Unreleased]: Phase 4, generative simulator
+
+### Tests (written first, failing)
+- `test_hawkes.py`: `OnlineHawkes`. Thinning event rates match the
+  stationary intensity; `excite(j)` raises the intensity by exactly
+  `alpha[:, j]`; `next_event(until)` stops at the requested time.
+- `test_simulator.py`:
+  - Generated background rates are within 5% of the stationary intensity.
+  - The book is never crossed; the same seed reproduces the run and a
+    different seed does not.
+  - Applied flow uses only the calibrated mark values.
+  - Background cancels never touch agent orders.
+  - Every agent order reaches the book exactly `latency` after it was sent.
+  - Agent fills carry side, price and size, and passive fills are flagged
+    non-aggressive.
+  - Unchanged quotes keep their order ids, and so their queue position.
+  - An agent market order excites the background MB intensity, and its
+    fills are aggressive.
+- `test_stylized.py`:
+  - The spread distribution buckets ticks and caps the tail.
+  - Alternating trade signs give lag-1 autocorrelation −1.
+  - The signature plot is checked on a hand-computed path.
+  - Total-variation distance.
+  - `record_tape` from replayed events: quotes recorded only when both
+    sides exist; trades signed by aggressor or by mid for hidden trades.
+
+## Phase 3, event classification and calibration
 
 ### Tests (written first, failing)
 - `test_flow.py`:

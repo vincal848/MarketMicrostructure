@@ -5,7 +5,25 @@ versions follow [Semantic Versioning](https://semver.org/). Each roadmap phase
 (see [docs/ROADMAP.md](docs/ROADMAP.md)) is logged in two steps: the tests
 that define it, then the implementation that makes them pass.
 
-## [Unreleased]: Phase 1, order-level data and exact replay
+## [Unreleased]: Phase 2, Hawkes estimation
+
+### Tests (written first, failing)
+- `test_hawkes_estimation.py`:
+  - `log_likelihood` must equal an O(n²) oracle written directly from the
+    definition, for a 2-D process with four different decays.
+  - Parameter recovery within 4 standard errors, in 1-D and 2-D with the
+    decay fixed, and for a profiled shared decay (including the decay's
+    own SE).
+  - The fitted log-likelihood is at least the truth's, and is reproduced by
+    `log_likelihood` at the fitted params.
+  - Time-rescaled residuals pass KS under the true model; residuals equal
+    compensator increments in a hand-computed case.
+  - On Hawkes data, Poisson loses on AIC and fails KS.
+  - On Poisson data, the Hawkes fit finds a spectral radius below 0.1.
+  - Poisson MLE equals event rates, with √n/T standard errors.
+  - Non-positive decays and out-of-range types are rejected.
+
+## Phase 1, order-level data and exact replay
 
 ### Tests (written first, failing)
 - `test_book.py`: `execute_order` fills a named order anywhere in its queue

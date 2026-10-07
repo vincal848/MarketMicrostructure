@@ -1,0 +1,128 @@
+"""Phase 2: Hawkes maximum likelihood, uncertainty and goodness of fit."""
+
+import numpy as np
+import pytest
+
+from microstructure.hawkes import (
+    EventStream,
+    HawkesParams,
+    fit,
+    fit_decay,
+    fit_poisson,
+    ks_exponential,
+    log_likelihood,
+    rescaled_residuals,
+    simulate,
+)
+
+TRUTH_2D = HawkesParams(
+    mu=[0.5, 0.3],
+    alpha=[[0.8, 0.4], [0.6, 0.6]],
+    beta=[[2.0, 2.0], [2.0, 2.0]],
+)
+
+
+def _naive_log_likelihood(stream: EventStream, params: HawkesParams) -> float:
+    """O(n^2) oracle straight from the definition, independent of the
+    recursions in hawkes.py."""
+    t, k = stream.times, stream.types
+    total = 0.0
+    for idx in range(len(t)):
+        i = k[idx]
+        lam = params.mu[i]
+        for prev in range(idx):
+            j = k[prev]
+            lam += params.alpha[i, j] * np.exp(-params.beta[i, j] * (t[idx] - t[prev]))
+        total += np.log(lam)
+    compensator = params.mu.sum() * stream.horizon
+    for idx in range(len(t)):
+        j = k[idx]
+        tail = 1.0 - np.exp(-params.beta[:, j] * (stream.horizon - t[idx]))
+        compensator += np.sum(params.alpha[:, j] / params.beta[:, j] * tail)
+    return float(total - compensator)
+
+
+@pytest.fixture(scope="module")
+def stream_2d() -> EventStream:
+    return simulate(TRUTH_2D, horizon=4000.0, seed=11)
+
+
+def test_log_likelihood_matches_the_naive_definition() -> None:
+    params = HawkesParams(mu=[0.4, 0.2], alpha=[[0.5, 0.3], [0.1, 0.4]], beta=[[1.5, 3.0], [2.0, 0.7]])
+    stream = simulate(params, horizon=150.0, seed=3)
+    assert len(stream) > 50
+    assert log_likelihood(stream, params) == pytest.approx(_naive_log_likelihood(stream, params), rel=1e-9)
+
+
+def test_fit_recovers_1d_parameters_within_four_standard_errors() -> None:
+    truth = HawkesParams(mu=[0.4], alpha=[[1.2]], beta=[[2.0]])
+    stream = simulate(truth, horizon=20000.0, seed=5)
+    result = fit(stream, n_types=1, decay=2.0)
+    assert abs(result.params.mu[0] - 0.4) < 4 * result.mu_se[0]
+    assert abs(result.params.alpha[0, 0] - 1.2) < 4 * result.alpha_se[0, 0]
+
+
+def test_fit_recovers_2d_parameters_within_four_standard_errors(stream_2d: EventStream) -> None:
+    result = fit(stream_2d, n_types=2, decay=2.0)
+    assert np.all(np.abs(result.params.mu - TRUTH_2D.mu) < 4 * result.mu_se)
+    assert np.all(np.abs(result.params.alpha - TRUTH_2D.alpha) < 4 * result.alpha_se)
+
+
+def test_fitted_log_likelihood_is_at_least_the_truths(stream_2d: EventStream) -> None:
+    result = fit(stream_2d, n_types=2, decay=2.0)
+    assert result.log_likelihood >= log_likelihood(stream_2d, TRUTH_2D) - 1e-6
+    assert result.log_likelihood == pytest.approx(log_likelihood(stream_2d, result.params), rel=1e-9)
+
+
+def test_fit_decay_recovers_the_shared_decay(stream_2d: EventStream) -> None:
+    result = fit_decay(stream_2d, n_types=2, bounds=(0.1, 50.0))
+    assert result.decay_se is not None
+    assert abs(result.params.beta[0, 0] - 2.0) < 4 * result.decay_se
+    assert np.all(np.abs(result.params.alpha - TRUTH_2D.alpha) < 4 * result.alpha_se)
+    assert result.n_params == 2 + 4 + 1
+
+
+def test_residuals_under_the_true_model_are_unit_exponential(stream_2d: EventStream) -> None:
+    for test in ks_exponential(rescaled_residuals(stream_2d, TRUTH_2D)):
+        assert test.pvalue > 0.01
+
+
+def test_residuals_sum_to_the_compensator() -> None:
+    # Per type, residuals are increments of the compensator at that type's
+    # events, so they sum to the compensator at the last such event.
+    stream = EventStream([1.0, 2.5, 4.0], [0, 0, 0], horizon=5.0)
+    poisson = HawkesParams([0.8], [[0.0]], [[1.0]])
+    (residuals,) = rescaled_residuals(stream, poisson)
+    np.testing.assert_allclose(residuals, [0.8, 1.2, 1.2])
+
+
+def test_poisson_misses_the_clustering_that_hawkes_captures(stream_2d: EventStream) -> None:
+    hawkes_fit = fit(stream_2d, n_types=2, decay=2.0)
+    poisson_fit = fit_poisson(stream_2d, n_types=2)
+    assert hawkes_fit.aic < poisson_fit.aic
+    poisson_ks = ks_exponential(rescaled_residuals(stream_2d, poisson_fit.params))
+    assert all(test.pvalue < 0.01 for test in poisson_ks)
+
+
+def test_fit_to_poisson_data_finds_little_excitation() -> None:
+    poisson = HawkesParams([0.5, 0.5], [[0.0, 0.0], [0.0, 0.0]], [[1.0, 1.0], [1.0, 1.0]])
+    stream = simulate(poisson, horizon=5000.0, seed=8)
+    result = fit(stream, n_types=2, decay=1.0)
+    assert result.params.spectral_radius() < 0.1
+
+
+def test_poisson_fit_is_the_event_rate() -> None:
+    stream = EventStream([0.5, 1.5, 4.0, 4.5], [0, 1, 0, 0], horizon=10.0)
+    result = fit_poisson(stream, n_types=2)
+    np.testing.assert_allclose(result.params.mu, [0.3, 0.1])
+    np.testing.assert_allclose(result.mu_se, np.sqrt([3, 1]) / 10.0)
+
+
+def test_fit_rejects_a_non_positive_decay(stream_2d: EventStream) -> None:
+    with pytest.raises(ValueError, match="decay"):
+        fit(stream_2d, n_types=2, decay=0.0)
+
+
+def test_fit_rejects_types_beyond_n_types(stream_2d: EventStream) -> None:
+    with pytest.raises(ValueError, match="types"):
+        fit(stream_2d, n_types=1, decay=2.0)

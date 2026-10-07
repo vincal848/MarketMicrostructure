@@ -24,9 +24,12 @@ rl = [
     "torch>=2.2",
 ]
 dev = [
+    "hypothesis>=6.100",
     "mypy>=1.10",
     "pandas-stubs>=2.1",
+    "pre-commit>=3.7",
     "pytest>=8",
+    "pytest-cov>=5",
     "scipy-stubs>=1.11",
     "ruff>=0.6",
 ]
@@ -50,6 +53,11 @@ extend-exclude = ["legacy"]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "N", "PT", "NPY"]
 # R and other single-letter names follow the Hawkes/AS papers' notation.
 ignore = ["N802", "N803", "N806"]
+
+[tool.ruff.lint.isort]
+# Pinned so import order is identical with or without the package installed
+# (e.g. inside pre-commit's isolated environment).
+known-first-party = ["microstructure"]
 
 [tool.mypy]
 strict = true

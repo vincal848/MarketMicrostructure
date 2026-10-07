@@ -65,7 +65,9 @@ def record_tape(events: Iterable[OrderEvent], start_ns: int, end_ns: int) -> Mar
     asks: list[int] = []
     trades: list[tuple[float, int, int, int]] = []
     for event in events:
-        inside = start_ns <= event.ts < end_ns
+        if event.ts >= end_ns:
+            break  # events are time-ordered: nothing later can be inside
+        inside = start_ns <= event.ts
         t = (event.ts - start_ns) / NS_PER_SECOND
         if inside:
             match event:

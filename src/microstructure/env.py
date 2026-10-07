@@ -27,7 +27,7 @@ baselines like for like.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -48,6 +48,8 @@ class EnvConfig:
     max_inventory: int = 500
     inventory_penalty: float = 0.01
     offsets: tuple[int, ...] = (0, 1, 2, 4)
+    maker_fee: float = 0.0  # per share, price units (negative = rebate)
+    taker_fee: float = 0.0
 
     def __post_init__(self) -> None:
         if self.step_seconds <= 0 or self.quote_size <= 0 or self.max_inventory < self.quote_size:
@@ -61,8 +63,8 @@ class _EnvAgent:
 
     env: MarketMakingEnv
     decision_interval: float
+    ledger: Ledger
     prices: tuple[int | None, int | None] = (None, None)
-    ledger: Ledger = field(default_factory=Ledger)
 
     def decide(self, view: MarketView) -> list[Action]:
         bid, ask = self.prices
@@ -126,7 +128,8 @@ class MarketMakingEnv:
 
     def reset(self, seed: int) -> np.ndarray:
         scenario = self.config.scenario
-        agent = _EnvAgent(self, decision_interval=self.config.step_seconds)
+        ledger = Ledger(maker_fee=self.config.maker_fee, taker_fee=self.config.taker_fee)
+        agent = _EnvAgent(self, decision_interval=self.config.step_seconds, ledger=ledger)
         simulator = MarketSimulator(
             scenario.params, scenario.marks, scenario.initial_depth, scenario.config(seed), agents=(agent,)
         )

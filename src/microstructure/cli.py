@@ -18,12 +18,16 @@ from typing import Any
 
 import numpy as np
 
+from microstructure.bench import run_benchmarks
 from microstructure.book import Depth
 from microstructure.calibration import DecayGrid, KernelSpec, ProfiledDecay, calibrate_window, session_windows
 from microstructure.databento import read_mbp10
+from microstructure.experiment import build_scenario, load_config, run_experiment
 from microstructure.flow import ClassifiedFlow, classify, marks
 from microstructure.itch import read_itch
-from microstructure.replay import Replayer, ReplayReport
+from microstructure.replay import Replayer, ReplayReport, depth_at
+from microstructure.simulator import MarketSimulator
+from microstructure.stylized import record_tape, summarize
 
 log = logging.getLogger("microstructure")
 NS_PER_MINUTE = 60 * 1_000_000_000
@@ -127,6 +131,74 @@ def _calibrate_mbp10(args: argparse.Namespace) -> int:
     return _calibrate(flow, args, {"source": str(args.path)})
 
 
+def _depth_itch(args: argparse.Namespace) -> int:
+    depth = depth_at(read_itch(args.path, args.symbol), _clock(args.at), args.levels)
+    _write_json(args.out, _depth_json(depth))
+    log.info("book at %s: %d bid and %d ask levels", args.at, len(depth[0]), len(depth[1]))
+    return 0
+
+
+def _stylized_itch(args: argparse.Namespace) -> int:
+    tape = record_tape(read_itch(args.path, args.symbol), _clock(args.start), _clock(args.end))
+    _write_json(args.out, summarize(tape, args.tick))
+    return 0
+
+
+def _seed_range(text: str) -> range:
+    start, stop = (int(part) for part in text.split(":"))
+    return range(start, stop)
+
+
+def _simulate(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    scenario = build_scenario(config, horizon=args.horizon)
+    generated = np.zeros(scenario.params.n_types)
+    seeds = []
+    for seed in _seed_range(args.seeds):
+        simulator = MarketSimulator(
+            scenario.params, scenario.marks, scenario.initial_depth, scenario.config(seed)
+        )
+        result = simulator.run()
+        generated += result.generated
+        seeds.append(
+            {
+                "seed": seed,
+                "generated": result.generated.tolist(),
+                "skipped": result.skipped.tolist(),
+                "stylized": summarize(result.tape, scenario.tick),
+            }
+        )
+        log.info("seed %d: %d events", seed, int(result.generated.sum()))
+    observed_rate = generated / (len(seeds) * scenario.horizon)
+    stationary = scenario.params.stationary_intensity()
+    _write_json(
+        args.out,
+        {
+            "config": str(args.config),
+            "horizon": scenario.horizon,
+            "stationary_intensity": stationary.tolist(),
+            "observed_rate": observed_rate.tolist(),
+            "rate_ratio": (observed_rate / stationary).tolist(),
+            "seeds": seeds,
+        },
+    )
+    return 0
+
+
+def _experiment(args: argparse.Namespace) -> int:
+    run = run_experiment(load_config(args.config), args.out)
+    log.info("results in %s", run)
+    print(run)
+    return 0
+
+
+def _bench(args: argparse.Namespace) -> int:
+    result = run_benchmarks(scale=args.scale)
+    _write_json(args.out, result)
+    print(json.dumps({k: round(v) for k, v in result.items()}))
+    return 0
+
+
 def _add_calibration_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--start", default="10:00", help="session start, HH:MM local exchange time")
     command.add_argument("--end", default="15:30", help="session end, HH:MM local exchange time")
@@ -174,6 +246,44 @@ def build_parser() -> argparse.ArgumentParser:
     calibrate_mbp.add_argument("path", type=Path, help="Databento MBP-10 CSV for one symbol and day")
     _add_calibration_arguments(calibrate_mbp)
     calibrate_mbp.set_defaults(handler=_calibrate_mbp10)
+
+    depth_itch = commands.add_parser("depth-itch", help="write one symbol's ITCH book just before a time")
+    depth_itch.add_argument("path", type=Path)
+    depth_itch.add_argument("--symbol", required=True)
+    depth_itch.add_argument("--at", required=True, help="HH:MM local exchange time")
+    depth_itch.add_argument("--levels", type=int, default=10)
+    depth_itch.add_argument("--out", type=Path, required=True)
+    depth_itch.set_defaults(handler=_depth_itch)
+
+    stylized_itch = commands.add_parser(
+        "stylized-itch", help="stylized facts of one symbol's real tape in a window"
+    )
+    stylized_itch.add_argument("path", type=Path)
+    stylized_itch.add_argument("--symbol", required=True)
+    stylized_itch.add_argument("--start", required=True, help="HH:MM")
+    stylized_itch.add_argument("--end", required=True, help="HH:MM")
+    stylized_itch.add_argument("--tick", type=int, default=100)
+    stylized_itch.add_argument("--out", type=Path, required=True)
+    stylized_itch.set_defaults(handler=_stylized_itch)
+
+    simulate = commands.add_parser(
+        "simulate", help="simulate an experiment's market without agents: rates vs theory, stylized facts"
+    )
+    simulate.add_argument("config", type=Path, help="experiment TOML")
+    simulate.add_argument("--seeds", default="0:5", help="half-open seed range start:stop")
+    simulate.add_argument("--horizon", type=float, default=None, help="seconds (default: the config's)")
+    simulate.add_argument("--out", type=Path, required=True)
+    simulate.set_defaults(handler=_simulate)
+
+    experiment = commands.add_parser("experiment", help="run an experiment TOML into a new run directory")
+    experiment.add_argument("config", type=Path)
+    experiment.add_argument("--out", type=Path, default=Path("runs"), help="root for run directories")
+    experiment.set_defaults(handler=_experiment)
+
+    bench = commands.add_parser("bench", help="throughput of the book, replay and simulator")
+    bench.add_argument("--scale", type=float, default=1.0)
+    bench.add_argument("--out", type=Path, required=True)
+    bench.set_defaults(handler=_bench)
     return parser
 
 

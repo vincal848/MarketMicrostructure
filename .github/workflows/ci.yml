@@ -53,5 +53,5 @@ jobs:
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e ".[dev,rl]"
-      - name: Test (with PyTorch)
-        run: pytest -q tests/test_rl.py tests/test_env.py
+      - name: Full suite with coverage gate
+        run: pytest -q --cov=microstructure --cov-report=term-missing --cov-fail-under=95

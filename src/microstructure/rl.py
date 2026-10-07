@@ -160,9 +160,13 @@ def train_dqn(
     config: DQNConfig,
     episodes: int,
     seeds: Iterable[int],
-    on_episode: Callable[[int, float], None] | None = None,
+    on_episode: Callable[[int, float, Policy], None] | None = None,
 ) -> tuple[Policy, TrainingLog]:
-    """Train a Double DQN for `episodes`, resetting episode k with the k-th seed."""
+    """Train a Double DQN for `episodes`, resetting episode k with the k-th seed.
+
+    `on_episode(episode, return, policy)` runs after each episode, e.g. to
+    checkpoint the policy against validation seeds.
+    """
     torch.manual_seed(config.seed)
     rng = np.random.default_rng(config.seed)
     env = make_env()
@@ -194,7 +198,7 @@ def train_dqn(
                 target.load_state_dict(online.state_dict())
         log.episode_returns.append(total)
         if on_episode is not None:
-            on_episode(episode, total)
+            on_episode(episode, total, policy)
     online.eval()
     return policy, log
 

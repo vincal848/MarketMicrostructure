@@ -30,6 +30,41 @@ that define it, then the implementation that makes them pass.
 - `tests/experiment_fixtures.py`: the shared synthetic calibration
   artifacts.
 
+### Implementation
+- `experiment.py`:
+  - `load_config` parses TOML into frozen, validated dataclasses: separate
+    `FixedSpreadSpec`/`AvellanedaStoikovSpec` types rather than one spec
+    with optional fields; unknown keys are errors; seed ranges must be
+    disjoint.
+  - `build_scenario` builds the scenario from the calibration JSON window,
+    the marks `.npz` and the depth JSON.
+  - `run_experiment`: AS calibrated on calibration seeds; baselines on test
+    seeds; the DQN trained on train seeds, checkpointed against validation
+    seeds every `checkpoint_every` episodes, with the best checkpoint
+    tested. Writes `manifest.json`, `results.json`, `summary.md` and
+    `policy.pt`. `evaluate_policy` runs one greedy episode.
+- `replay.depth_at`; `stylized.record_tape` stops at the window end instead
+  of reading the rest of the file.
+- `bench.py`: seeded throughput benchmarks for the book, replay and
+  simulator.
+- `cli.py`: `depth-itch`, `stylized-itch`, `simulate` (rate ratio against
+  theory, plus stylized facts per seed), `experiment` and `bench`.
+- `env.EnvConfig` gains maker/taker fees, so RL and baselines pay the same
+  costs.
+- `rl.train_dqn`'s `on_episode` callback receives the policy, which is what
+  checkpointing needs.
+- Tooling:
+  - `.pre-commit-config.yaml`: hygiene hooks, ruff, ruff-format and strict
+    mypy.
+  - Dev dependencies: hypothesis, pytest-cov, pre-commit.
+  - CI: the `rl` job runs the full suite with a 95% coverage gate (97%
+    measured locally).
+- Self-review fixes made before committing: four `type: ignore`s in the
+  first draft of `experiment.py` were replaced with real types
+  (`Iterator[int]`, `AbstractSet`, `dataclasses.MISSING`, explicit integer
+  depth tuples). The first draft of the property test was rewritten around
+  typed operation dataclasses with exact volume conservation.
+
 ## Phase 6, reinforcement-learning market maker
 
 ### Tests (written first, failing)

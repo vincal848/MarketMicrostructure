@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 from experiment_fixtures import CONFIG, MID, RL, write_artifacts
-from microstructure.experiment import ConfigError, build_scenario, load_config, run_experiment
 
+from microstructure.experiment import ConfigError, build_scenario, load_config, run_experiment
 from microstructure.flow import FlowType
 
 

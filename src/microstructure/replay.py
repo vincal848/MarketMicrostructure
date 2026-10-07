@@ -195,3 +195,14 @@ def verify_snapshots(
         if replayer.book.depth_snapshot(n_levels) != expected:
             mismatched.append(i)
     return mismatched
+
+
+def depth_at(events: Iterable[OrderEvent], ts: int, n_levels: int) -> Depth:
+    """The top `n_levels` after replaying every event strictly before `ts`
+    (e.g. the opening book of a simulation window)."""
+    replayer = Replayer()
+    for event in events:
+        if event.ts >= ts:
+            break
+        replayer.apply(event)
+    return replayer.book.depth_snapshot(n_levels)

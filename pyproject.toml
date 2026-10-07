@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "microstructure"
-version = "0.2.0"
+version = "1.0.0"
 description = "Hawkes-driven limit order book simulator with competing market makers"
 readme = "README.md"
 license = "MIT"

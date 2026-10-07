@@ -5,13 +5,31 @@ versions follow [Semantic Versioning](https://semver.org/). Each roadmap phase
 (see [docs/ROADMAP.md](docs/ROADMAP.md)) is logged in two steps: the tests
 that define it, then the implementation that makes them pass.
 
-## [Unreleased]: Phase 4 fixes, simulator realism on calibrated SPY flow
+## [1.0.0] - 2026-10-07: all seven roadmap phases
+
+Every phase of docs/ROADMAP.md is implemented test-first, and every
+milestone's acceptance is measured on real data (docs/RESULTS.md):
+
+- **M1.** A full ITCH day is replayed with 0 price-time violations in
+  130,532 executions.
+- **M2.** Converged multi-timescale Hawkes MLE.
+- **M3.** Hawkes beats Poisson in all 22 real windows across 2019 and 2025,
+  and the simulator reproduces event rates, trade-sign memory and
+  durations, with documented spread and volatility gaps.
+- **M4.** Calibrated baselines trade in every seed, with exact PnL
+  attribution.
+- **M5.** A Double DQN avoids the adverse selection that sinks calibrated
+  Avellaneda-Stoikov.
+
+The sections below are the per-phase log, newest first.
+
+### Phase 4 fixes, simulator realism on calibrated SPY flow
 
 Phase 4's acceptance run (5 × 30 min of the calibrated 11:00 SPY market
 against the real tape) passed on event rates and flow statistics. It failed
 on prices, and three defects were found and fixed in turn, each test-first.
 
-### Defects, tests, fixes
+#### Defects, tests, fixes
 1. **Book volume drift.** A background cancel removed
    `min(sampled size, a random order's size)` shares, so most cancels removed
    less than a whole order. Adds outran removals 1.7:1, best queues grew from
@@ -52,7 +70,7 @@ intent as an exact invariant:
 
 Experiments compute AS parameters once per distinct `gamma`.
 
-## Phase 2 fix, estimator convergence on real flow
+### Phase 2 fix, estimator convergence on real flow
 
 Found while preparing the Phase 4–6 acceptance runs. The calibrated model's
 stationary intensity was 74 events/s against 131/s realized in the same
@@ -64,7 +82,7 @@ of ~300 left. Parameters spanned 0.005–11,298 and compensator coefficients
 1–10% short of the event counts. Every M3 grid fit before this fix was
 unconverged.
 
-### Tests (written first; the first one failed on the old optimizer)
+#### Tests (written first; the first one failed on the old optimizer)
 - `test_six_type_flow_with_replace_ties_converges`: a six-type process with
   tied cancel/add pairs and decays from 1e5 to 1 per second. The old
   optimizer left one type's compensator 0.05% short; the test requires
@@ -75,7 +93,7 @@ unconverged.
   design for the per-target KKT contract. These passed on the old code;
   only real-data scale exposed the failure.
 
-### Fix
+#### Fix
 - `hawkes_estimation._maximize_target` now solves in scale-free
   coordinates u_c = θ_c·b_c (each coefficient's share of the compensator).
   It starts with 50 monotone EM steps, then L-BFGS-B with an evaluation
@@ -91,9 +109,9 @@ unconverged.
   - The nested grids now behave: 7 decays gain 50 log-likelihood (AIC −26),
     and 8 decays do not pay for their parameters.
 
-## Phase 7, productionization
+### Phase 7, productionization
 
-### Tests (written first, failing)
+#### Tests (written first, failing)
 - `test_properties.py` (Hypothesis): under any sequence of limit, market,
   cancel and execute operations, the book is never crossed, levels stay
   sorted and positive, and resting volume equals the volume conservation
@@ -116,7 +134,7 @@ unconverged.
 - `tests/experiment_fixtures.py`: the shared synthetic calibration
   artifacts.
 
-### Implementation
+#### Implementation
 - `experiment.py`:
   - `load_config` parses TOML into frozen, validated dataclasses: separate
     `FixedSpreadSpec`/`AvellanedaStoikovSpec` types rather than one spec
@@ -151,7 +169,7 @@ unconverged.
   depth tuples). The first draft of the property test was rewritten around
   typed operation dataclasses with exact volume conservation.
 
-### Architecture enforcement
+#### Architecture enforcement
 - `tests/test_architecture.py` parses every module's imports and fails if
   any module imports a higher layer, if a module is missing from the layer
   map, or if a core (layer 0) module does I/O. Writing it showed that the
@@ -159,9 +177,9 @@ unconverged.
   `flow`, so it belongs in layer 3). The diagram was corrected to match the
   enforced map, and the module table now covers all 21 modules.
 
-## Phase 6, reinforcement-learning market maker
+### Phase 6, reinforcement-learning market maker
 
-### Tests (written first, failing)
+#### Tests (written first, failing)
 - `test_env.py`:
   - `reset` returns a finite float32 observation of the declared size.
   - Episodes end exactly at the horizon, and stepping after the end
@@ -178,7 +196,7 @@ unconverged.
   oldest entries and samples batches; Double DQN learns the best arm of a
   noisy 4-armed bandit; training is bit-for-bit reproducible from its seed.
 
-### Implementation
+#### Implementation
 - `simulator.py`: `advance(until)` and a public `finish()`; `run()` is
   `advance(horizon)` followed by `finish()`. Also `now`, `mid()`,
   `last_mid` and `trade_flow_since`. Initial agent decisions are scheduled
@@ -204,7 +222,7 @@ unconverged.
 - CI: the lint job installs CPU PyTorch so mypy checks `rl.py`, and a new
   `rl` job runs the PyTorch tests.
 
-### Defects found while implementing
+#### Defects found while implementing
 - `agents.estimate_fill_curve` measured each sweep against the quote at
   the trade's own timestamp. That quote is already post-trade, so every
   sweep appeared to stop at the touch and κ was unidentifiable. It now
@@ -217,9 +235,9 @@ unconverged.
   It now uses `calibrate_avellaneda_stoikov`, as the roadmap specifies,
   and a test of the calibration itself was added first.
 
-## Phase 5, market makers and PnL attribution
+### Phase 5, market makers and PnL attribution
 
-### Tests (written first, failing)
+#### Tests (written first, failing)
 - `test_accounting.py`:
   - Cash, inventory and mark-to-market; maker rebates and taker fees.
   - A hand-computed two-fill attribution (spread capture, adverse selection
@@ -243,7 +261,7 @@ unconverged.
   - Both baselines trade in every seed, the legacy failure is checked
     explicitly, and every run's attribution sums to its PnL.
 
-### Implementation
+#### Implementation
 - `accounting.py`: `MidPath` (last mid at or before t), `Ledger` (cash,
   inventory, maker/taker fees, volume, max |inventory|), and
   `attribution` into spread capture / adverse selection at h / inventory,
@@ -265,7 +283,7 @@ unconverged.
   `_size` replace compound assertions; agent factories are typed as
   `Callable[[], Agent]`.
 
-## Phase 3b, multi-timescale kernels
+### Phase 3b, multi-timescale kernels
 
 Added after Phase 3's first real-data calibration. With one exponential
 kernel, the fitted decay hit its upper bound (5000/s) in every window of
@@ -274,7 +292,7 @@ nanosecond timestamp (mostly the cancel and add halves of replaces), 61% of
 gaps are under 100 µs, and 98% are under 100 ms. One exponential cannot
 span microseconds to seconds.
 
-### Tests (written first, failing)
+#### Tests (written first, failing)
 - `test_hawkes_multiscale.py`:
   - Params hold U components as (U, K, K), and single kernels are promoted
     to U = 1; the branching matrix sums the components; mismatched
@@ -286,7 +304,7 @@ span microseconds to seconds.
   - Residuals under the true two-scale model pass KS.
   - Online excitation adds every component's jump.
 
-### Implementation
+#### Implementation
 - `hawkes.py`: `HawkesParams` stores `alpha`/`beta` as (U, K, K), promoting
   (K, K) input, and adds `n_components`; the branching matrix sums the
   components. Kernel sums are (n_i, U, K), compensator tails (U, K, K), and
@@ -312,9 +330,9 @@ span microseconds to seconds.
     theoretical, so the simulator is unbiased and the tolerance was the
     problem: about 2.6σ at the old criticality, about 4σ at the new one.
 
-## Phase 4, generative simulator
+### Phase 4, generative simulator
 
-### Tests (written first, failing)
+#### Tests (written first, failing)
 - `test_hawkes.py`: `OnlineHawkes`. Thinning event rates match the
   stationary intensity; `excite(j)` raises the intensity by exactly
   `alpha[:, j]`; `next_event(until)` stops at the requested time.
@@ -342,7 +360,7 @@ span microseconds to seconds.
   - `record_tape` from replayed events: quotes recorded only when both
     sides exist; trades signed by aggressor or by mid for hidden trades.
 
-### Implementation
+#### Implementation
 - `hawkes.OnlineHawkes`: event-at-a-time thinning with `advance_to`,
   `excite` and `next_event(until)`. Valid because thinning proposals are
   memoryless at a deadline.
@@ -368,9 +386,9 @@ span microseconds to seconds.
   at construction. It now keeps counters and builds the immutable result
   once, in `_finish`.
 
-## Phase 3, event classification and calibration
+### Phase 3, event classification and calibration
 
-### Tests (written first, failing)
+#### Tests (written first, failing)
 - `test_flow.py`:
   - A sweep across levels at one timestamp is a single MB; executions at
     different times stay separate; executing a resting bid is an MS.
@@ -399,7 +417,7 @@ span microseconds to seconds.
   - the 11th level sliding into the top 10 is not an add;
   - New York local timestamps; chunked reading does not split events.
 
-### Implementation
+#### Implementation
 - `flow.py`:
   - `FlowType` (MB, MS, LA, LI, LD, C) and `ClassifiedFlow` (parallel int
     arrays with `between` and `to_stream`); `FlowMarks` with `marks`.
@@ -427,9 +445,9 @@ span microseconds to seconds.
   - The MBP fixture builder moved to `tests/mbp_writer.py` for reuse.
   - Added CLI tests for both calibration commands.
 
-## Phase 2, Hawkes estimation
+### Phase 2, Hawkes estimation
 
-### Tests (written first, failing)
+#### Tests (written first, failing)
 - `test_hawkes_estimation.py`:
   - `log_likelihood` must equal an O(n²) oracle written directly from the
     definition, for a 2-D process with four different decays.
@@ -445,7 +463,7 @@ span microseconds to seconds.
   - Poisson MLE equals event rates, with √n/T standard errors.
   - Non-positive decays and out-of-range types are rejected.
 
-### Implementation
+#### Implementation
 - `hawkes.py`: vectorized kernel sums (`target_sums`, `compensator_tails`).
   The recursion is evaluated with blockwise cumulative sums, rebased so
   `exp(beta * dt)` never overflows. `log_likelihood` now uses them instead
@@ -466,15 +484,15 @@ span microseconds to seconds.
     seen failing before `_objective` was factored out). The roadmap listed
     it, but the first test commit missed it.
 
-## Phase 1, order-level data and exact replay
+### Phase 1, order-level data and exact replay
 
-### Acceptance on real data (M1 met)
+#### Acceptance on real data (M1 met)
 - Full-day replay of SPY from the Nasdaq ITCH sample day 2019-01-30:
   3,065,003 events, 130,532 audited executions, zero priority violations,
   zero unknown ids, zero quantity mismatches, zero crossing adds, 230 s
   wall time. Details in `docs/RESULTS.md`.
 
-### Tests (written first, failing)
+#### Tests (written first, failing)
 - `test_book.py`: `execute_order` fills a named order anywhere in its queue
   and keeps queue priority on partial fills; over-execution is rejected
   without changing state; `queue_ahead` counts only older orders at the
@@ -500,7 +518,7 @@ span microseconds to seconds.
 - New fixture `seeded_message.csv`/`seeded_orderbook.csv`: a 2-level window
   whose first snapshot already holds orders added before the window.
 
-### Implementation
+#### Implementation
 - `events.py`: frozen, validated event dataclasses; the `OrderEvent` union;
   `seed_order_id`.
 - `book.py`: `execute_order`, `queue_ahead`, `is_at_front_of_best`,

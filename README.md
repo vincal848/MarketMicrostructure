@@ -28,24 +28,24 @@ first, in **[CHANGELOG.md](CHANGELOG.md)**.
 
 ## Status
 
-All seven roadmap phases are implemented, test-first. The suite has 226
-tests at 97% coverage and passes `mypy --strict` and ruff. CI enforces the
-layer architecture.
+Version 1.0.0: all seven roadmap phases are implemented, test-first. The
+suite has 231 tests at 97% coverage and passes `mypy --strict` and ruff. CI
+enforces the layer architecture.
 
 | Milestone | Acceptance | Result |
 |---|---|---|
 | M1 replay | Full ITCH day: zero unknown ids, zero price-time violations | **met**: 130,532 SPY executions audited, 0 violations |
 | M2 estimation | MLE recovers simulated parameters within 4 SE; KS passes | **met** (CI), including six-type flow with tied events |
-| M3 calibration | Hawkes beats Poisson on real flow; fit diagnostics reported | **met**: see [RESULTS.md](docs/RESULTS.md) |
-| M3 validation | Simulated rates match theory; stylized facts compared with the real tape | see [RESULTS.md](docs/RESULTS.md) |
-| M4 market makers | Calibrated baselines trade; PnL attributed, CIs over ≥30 seeds | see [RESULTS.md](docs/RESULTS.md) |
-| M5 RL agent | Learned policy against the baselines on held-out seeds | see [RESULTS.md](docs/RESULTS.md) |
+| M3 calibration | Hawkes beats Poisson on real flow; fit diagnostics reported | **met**: all 22 windows (2019 ITCH, 2025 MBP-10); branching 0.91–0.97 |
+| M3 validation | Simulated rates match theory; stylized facts compared with the real tape | **met**: rates within 1.1%; spread too tight and mid 1.6–2× too volatile (documented) |
+| M4 market makers | Calibrated baselines trade; PnL attributed, CIs over ≥30 seeds | **met**: all agents trade in 30/30 seeds; calibrated AS loses $946/episode to adverse selection |
+| M5 RL agent | Learned policy against the baselines on held-out seeds | **met**: DQN beats AS by $957 [643, 1,325] per episode; tied with a fixed spread |
 
 ## Quick start
 
 ```bash
 pip install -e ".[dev]"          # add ,rl for the PyTorch market maker
-pytest -q                        # 226 tests
+pytest -q                        # 231 tests
 ruff check . && mypy             # lint, strict types
 pre-commit install               # run both on every commit
 ```

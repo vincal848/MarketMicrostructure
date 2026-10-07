@@ -36,6 +36,34 @@ that define it, then the implementation that makes them pass.
   - the 11th level sliding into the top 10 is not an add;
   - New York local timestamps; chunked reading does not split events.
 
+### Implementation
+- `flow.py`:
+  - `FlowType` (MB, MS, LA, LI, LD, C) and `ClassifiedFlow` (parallel int
+    arrays with `between` and `to_stream`); `FlowMarks` with `marks`.
+  - `classify` replays events and types each one against the book before
+    it, merging same-time same-aggressor executions.
+  - `FlowRecorder` and `add_type` are shared with the Databento adapter.
+- `databento.py`: `classify_mbp10`/`read_mbp10` classify by snapshot diffs.
+  - Trades register pending fills that later level decreases absorb.
+  - Only prices visible in both snapshots are compared.
+  - Records flagged as snapshots, or `R` clears, re-seed the book without
+    emitting flow.
+  - Timestamps are converted to New York time.
+- `calibration.py`: `session_windows`; `calibrate_window`, which fits Hawkes
+  (profiled decay) and Poisson and returns a `WindowFit` with AIC gain,
+  branching ratio, per-type KS, and a JSON `summary`.
+- `cli.py`: `calibrate-itch` and `calibrate-mbp10` (per-window JSON plus an
+  optional `.npz` of session mark samples), and `logging` progress output
+  (`-q` to silence).
+- Test changes made during implementation:
+  - Corrected `test_marks_collect_sizes_and_distances_per_type`: the fixture
+    book's order 2 is itself an LD add, so the expected LD marks are
+    `[10, 10, 9]`, not `[10, 9]`.
+  - The Databento slide test asserts on the second row's events only,
+    since the first row legitimately adds ten bid levels.
+  - The MBP fixture builder moved to `tests/mbp_writer.py` for reuse.
+  - Added CLI tests for both calibration commands.
+
 ## Phase 2, Hawkes estimation
 
 ### Tests (written first, failing)

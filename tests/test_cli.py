@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 import itch_writer as w
+import numpy as np
+from mbp_writer import scenario
 
 from microstructure.cli import main
 
@@ -35,3 +37,51 @@ def test_replay_itch_writes_a_clean_report(tmp_path: Path) -> None:
 def test_replay_itch_exits_nonzero_when_the_audit_finds_problems(tmp_path: Path) -> None:
     feed = _write(tmp_path / "dirty.itch", w.order_delete(SPY, 10, ref=99))
     assert main(["replay-itch", str(feed), "--symbol", "SPY", "--out", str(tmp_path / "r.json")]) == 1
+
+
+# --- Phase 3: calibration commands --------------------------------------------
+
+TEN_AM_NS = 10 * 3600 * 10**9
+
+
+def _busy_minute(path: Path) -> Path:
+    """One minute (10:00-10:01) of SPY flow: 60 adds, every third partly cancelled."""
+    messages = []
+    for k in range(60):
+        ts = TEN_AM_NS + k * 10**9
+        ref = 100 + k
+        side = "B" if k % 2 else "S"
+        price = 1_000_000 - 100 * (k % 3) if side == "B" else 1_000_100 + 100 * (k % 3)
+        messages.append(w.add_order(SPY, ts, ref=ref, side=side, shares=100, symbol="SPY", price=price))
+        if k % 3 == 0:
+            messages.append(w.order_cancel(SPY, ts + 1000, ref=ref, shares=50))
+    return _write(path, *messages)
+
+
+def test_calibrate_itch_fits_each_window(tmp_path: Path) -> None:
+    out, marks_out = tmp_path / "cal.json", tmp_path / "marks.npz"
+    args = ["calibrate-itch", str(_busy_minute(tmp_path / "day.itch")), "--symbol", "SPY"]
+    args += ["--start", "10:00", "--end", "10:01", "--minutes", "1"]
+    args += ["--out", str(out), "--marks-out", str(marks_out)]
+    assert main(args) == 0
+    result = json.loads(out.read_text())
+    assert result["replay"]["unknown_order_refs"] == 0
+    assert len(result["windows"]) == 1
+    window = result["windows"][0]
+    assert sum(window["counts"]) == result["classified_events_in_session"] == 80  # 60 adds + 20 cancels
+    assert window["types"] == ["MB", "MS", "LA", "LI", "LD", "C"]
+
+    marks = np.load(marks_out)
+    assert int(marks["size_C"].sum()) == 20 * 50
+
+
+def test_calibrate_mbp10_fits_each_window(tmp_path: Path) -> None:
+    csv = tmp_path / "xnas-itch-20251111.mbp-10.csv"
+    scenario().to_csv(csv, index=False)
+    out = tmp_path / "cal.json"
+    args = ["calibrate-mbp10", str(csv), "--start", "09:30", "--end", "09:31", "--minutes", "1"]
+    args += ["--out", str(out)]
+    assert main(args) == 0
+    result = json.loads(out.read_text())
+    assert result["classified_events_in_session"] == 10
+    assert len(result["windows"]) == 1

@@ -1,6 +1,7 @@
 """Phase 3: fitting the six-type Hawkes model to classified flow, per window."""
 
 import json
+from itertools import pairwise
 
 import numpy as np
 import pytest
@@ -31,7 +32,7 @@ def test_session_windows_tile_the_session() -> None:
     windows = session_windows(TEN_AM, TEN_AM + 330 * 60 * SECOND, minutes=30)
     assert len(windows) == 11
     assert windows[0] == (TEN_AM, TEN_AM + 30 * 60 * SECOND)
-    assert all(a[1] == b[0] for a, b in zip(windows, windows[1:], strict=False))
+    assert all(a[1] == b[0] for a, b in pairwise(windows))
 
 
 def test_calibration_recovers_a_known_six_type_process() -> None:
@@ -51,7 +52,9 @@ def test_a_type_with_no_events_is_tolerated() -> None:
     truth = _six_type_truth()
     flow = _flow(truth, seconds=600.0, seed=5)
     keep = flow.kind != FlowType.LI
-    sparse = ClassifiedFlow(ts=flow.ts[keep], kind=flow.kind[keep], qty=flow.qty[keep], distance=flow.distance[keep])
+    sparse = ClassifiedFlow(
+        ts=flow.ts[keep], kind=flow.kind[keep], qty=flow.qty[keep], distance=flow.distance[keep]
+    )
     result = calibrate_window(sparse, TEN_AM, TEN_AM + 600 * SECOND, decay_bounds=(0.5, 50.0))
     assert result.counts[FlowType.LI] == 0
     assert result.hawkes.params.mu[FlowType.LI] == 0.0

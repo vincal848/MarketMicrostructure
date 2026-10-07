@@ -32,7 +32,10 @@ def _book() -> list[OrderEvent]:
 
 def _tail(flow: ClassifiedFlow, n: int) -> list[tuple[FlowType, int, int]]:
     """Last n classified events as (type, qty, distance)."""
-    return [(FlowType(k), int(q), int(d)) for k, q, d in zip(flow.kind[-n:], flow.qty[-n:], flow.distance[-n:], strict=True)]
+    return [
+        (FlowType(k), int(q), int(d))
+        for k, q, d in zip(flow.kind[-n:], flow.qty[-n:], flow.distance[-n:], strict=True)
+    ]
 
 
 def test_a_sweep_across_levels_is_one_market_order() -> None:
@@ -135,6 +138,7 @@ def test_marks_collect_sizes_and_distances_per_type() -> None:
         CancelOrder(ts=6, order_id=2, qty=4),
     ]
     m = marks(classify(events, tick=TICK))
-    assert list(m.sizes[FlowType.LD]) == [10, 9]  # order 5 (1003 vs best 1002) and order 12
-    assert list(m.distances[FlowType.LD]) == [1, 3]
+    # Orders 2 (999 behind 1000) and 5 (1003 behind 1002) from _book, then order 12.
+    assert list(m.sizes[FlowType.LD]) == [10, 10, 9]
+    assert list(m.distances[FlowType.LD]) == [1, 1, 3]
     assert list(m.distances[FlowType.C]) == [1]

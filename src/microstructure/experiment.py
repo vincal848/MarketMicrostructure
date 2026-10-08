@@ -180,10 +180,12 @@ def _rl_spec(table: Mapping[str, Any]) -> RLSpec:
         from microstructure.rl import DQNConfig
     except ImportError as error:  # pragma: no cover - depends on the environment
         raise ConfigError("[rl] needs PyTorch: pip install -e '.[rl]'") from error
-    env_keys = {"step_seconds", "quote_size", "max_inventory", "inventory_penalty", "offsets"}
+    env_keys = {"step_seconds", "quote_size", "max_inventory", "inventory_penalty", "offsets", "flow_windows"}
     dqn_keys = {f.name for f in fields(DQNConfig)}
     values = _take(table, "rl", {"episodes", "checkpoint_every"}, env_keys | dqn_keys)
-    env: dict[str, Any] = {k: (tuple(v) if k == "offsets" else v) for k, v in values.items() if k in env_keys}
+    env: dict[str, Any] = {
+        k: (tuple(v) if k in ("offsets", "flow_windows") else v) for k, v in values.items() if k in env_keys
+    }
     dqn: dict[str, Any] = {k: (tuple(v) if k == "hidden" else v) for k, v in values.items() if k in dqn_keys}
     return RLSpec(values["episodes"], values["checkpoint_every"], env, DQNConfig(**dqn))
 

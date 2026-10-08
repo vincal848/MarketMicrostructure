@@ -126,3 +126,17 @@ def test_simulator_can_advance_in_steps_and_matches_a_single_run() -> None:
     for t in range(1, 21):
         stepped.advance(float(t))
     np.testing.assert_array_equal(stepped.finish().tape.bid, whole.tape.bid)
+
+
+def test_flow_windows_append_trailing_features_consistent_with_the_base_ones() -> None:
+    config = EnvConfig(scenario=_scenario(), inventory_penalty=0.01, flow_windows=(1.0, 5.0))
+    env = MarketMakingEnv(config)
+    assert env.observation_size == 14
+    env.reset(seed=1)
+    for _ in range(8):
+        observation, _, _, _ = env.step(0)
+    assert observation.shape == (14,)
+    assert np.all(np.isfinite(observation))
+    # A window of one step is the base step feature (mid move is scaled by 20 instead of 10).
+    assert observation[10] == pytest.approx(observation[7])
+    assert observation[11] == pytest.approx(observation[6] / 2.0, abs=1e-6)

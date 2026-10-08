@@ -74,3 +74,40 @@ fixing it would change the baselines' numbers. W3 is rerun with deviations
 prior (action 0). It is the same W3 variant, so the budget stays at 4
 variants. W1, W2 and W4 results were visible when I chose the new grid;
 the choice was driven by run time only.
+
+## Results
+
+Dollars per 5-minute episode. Tuning seeds 7000–7029 (fixed spread −19.3,
+AS −1,099.9, AS capped −1,127.5). Score `s` = min(mean DQN − fixed, mean
+DQN − AS), which is the fixed-spread difference in every row.
+
+| variant | seed 0: s [CI vs fixed] | seed 1 | seed 2 | median s |
+|---|---|---|---|---|
+| W1 plain | +56.6 [−33.4, +154.7] | +51.5 | +61.6 | +56.6 |
+| W2 residual reward | +86.0 [+8.9, +169.9] | +68.9 | +89.9 | **+86.0** |
+| W3 deviations (0..+3) | +12.4 | +56.3 | +29.9 | +29.9 |
+| W4 residual + flow features | +26.1 | +54.2 | +55.2 | +54.2 |
+
+All 12 policies were above the fixed spread on the tuning seeds, which
+says more about this tuning set (the fixed spread loses $19 on it) than
+about the variants. W2 had the best median and was promoted; its median
+training seed is seed 0.
+
+**Held-out seeds 30000–30059, W2 seed 0, run once** (fixed spread −8.8, AS
+−1,006.1, AS capped −1,061.5, DQN +45.5 [+12.8, +78.1]):
+
+| comparison | paired PnL difference | CI excludes 0 (positive)? |
+|---|---|---|
+| DQN − fixed spread | +54.3 [−15.1, +134.1] | **no** |
+| DQN − AS | +1,051.5 [+730.0, +1,432.3] | yes |
+| DQN − AS capped | +1,107.0 [+742.3, +1,538.7] | yes |
+
+**The success criterion is not met.** The point estimate against the fixed
+spread is positive for the first time (+54), but its CI includes zero at 60
+seeds. Round 1 (V1, same family) was −8.1 [−76.2, +64.4], so the evidence
+is a possible small edge that cannot be told from none. The policy file was
+loaded, not retrained, so the held-out policy is exactly the tuned one.
+
+Run accounting: variants W1–W4 (4 of 4), 12 training runs plus the 3
+killed W3 runs from Amendment 2. Nothing was run on 30000–30059 except this
+one evaluation; seeds 30000–30059 are now spent.

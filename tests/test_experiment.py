@@ -3,10 +3,18 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 from experiment_fixtures import CONFIG, MID, RL, write_artifacts
 
-from microstructure.experiment import ConfigError, build_scenario, load_config, run_experiment
+from microstructure.evaluation import EvaluationTable, RunMetrics
+from microstructure.experiment import (
+    ConfigError,
+    build_scenario,
+    load_config,
+    paired_pnl_report,
+    run_experiment,
+)
 from microstructure.flow import FlowType
 
 
@@ -77,6 +85,28 @@ def test_experiment_trains_selects_and_tests_a_dqn(workspace: Path) -> None:
     assert set(results["dqn_vs"]) == {"fixed", "as"}
     assert len(results["training"]["episode_returns"]) == 4
 
+    paired = json.loads((run / "manifest.json").read_text())["dqn_paired_pnl"]
+    assert set(paired) == {"fixed", "as"}
+    for name, entry in paired.items():
+        assert entry["seeds"] == [300, 301, 302]
+        expected = [
+            d["pnl"] - b["pnl"] for d, b in zip(results["runs"]["dqn"], results["runs"][name], strict=True)
+        ]
+        assert entry["pnl_diff"] == expected
+        assert entry["ci95"] == [results["dqn_vs"][name]["low"], results["dqn_vs"][name]["high"]]
+
+
+def test_a_saved_policy_is_reloaded_without_retraining(workspace: Path) -> None:
+    pytest.importorskip("torch")
+    (workspace / "experiment.toml").write_text(CONFIG + RL)
+    first = run_experiment(load_config(workspace / "experiment.toml"), workspace / "runs")
+    saved = first / "policy.pt"
+    (workspace / "reload.toml").write_text(CONFIG + RL + f'load_policy = "{saved.as_posix()}"\n')
+    second = run_experiment(load_config(workspace / "reload.toml"), workspace / "runs")
+    runs = [json.loads((d / "results.json").read_text())["runs"]["dqn"] for d in (first, second)]
+    assert runs[0] == runs[1]
+    assert json.loads((second / "results.json").read_text())["training"]["episode_returns"] == []
+
 
 def test_max_distance_ticks_truncates_the_scenario_marks(workspace: Path) -> None:
     capped = CONFIG.replace("horizon = 20.0", "horizon = 20.0\nmax_distance_ticks = 2")
@@ -84,3 +114,24 @@ def test_max_distance_ticks_truncates_the_scenario_marks(workspace: Path) -> Non
     scenario = build_scenario(load_config(workspace / "experiment.toml"))
     assert list(scenario.marks.distances[FlowType.LD]) == [1, 2]
     assert list(scenario.marks.distances[FlowType.C]) == [0, 1, 2]
+
+
+def _table(pnls: dict[str, list[float]]) -> EvaluationTable:
+    return EvaluationTable(
+        {n: [RunMetrics(i, p, 0, 0, 0, 0, 0, 0, 0, 0) for i, p in enumerate(v)] for n, v in pnls.items()}
+    )
+
+
+def test_paired_report_separates_a_planted_edge_from_noise() -> None:
+    rng = np.random.default_rng(0)
+    base = rng.normal(0.0, 100.0, 30)
+    noise = rng.normal(0.0, 10.0, 30)
+    dqn = base + 50 + noise
+    tie = base + 50 + rng.normal(0.0, 10.0, 30)  # same expected PnL as the challenger
+    report = paired_pnl_report(_table({"dqn": list(dqn), "edge": list(base), "tie": list(tie)}), "dqn")
+    assert report["edge"]["beats"]
+    assert report["edge"]["ci95"][0] > 0
+    assert not report["tie"]["beats"]
+    assert report["tie"]["ci95"][0] < 0 < report["tie"]["ci95"][1]
+    assert report["edge"]["seeds"] == list(range(30))
+    assert np.allclose(report["edge"]["pnl_diff"], 50 + noise)

@@ -59,7 +59,9 @@ was split by day into train, validation and test sets of 350,235 / 161,351 /
 | Avellaneda-Stoikov | val | 29.73 ± 43.71 | 0.28 | 0.4 | −20.7 |
 | Avellaneda-Stoikov | test | 0.00 ± 0.00 | 0.00 | 0.0 | 0.0 |
 
-Plots and the full training and evaluation logs are in `results/`.
+The plots and the full training and evaluation logs (`results/`, 2.4 MB of
+JSON and PNG) were removed from the tree; recover them with
+`git checkout 0632e85 -- legacy/cmu_ml2_meta_dqn/results`.
 
 ## Caveats
 

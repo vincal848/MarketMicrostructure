@@ -185,8 +185,12 @@ seeds (minimum 5 fills for the fixed spread, 29 for AS). This was the
 legacy project's failure. PnL is attributed for every run, and the
 components sum exactly to mark-to-market PnL.
 
-**M5 acceptance: met** (trained reproducibly from the config and seed,
-compared on held-out seeds with CIs and attribution).
+**M5: compared, with the fixed spread not beaten.** The DQN beats AS on
+held-out seeds with CIs and attribution, but ties the fixed spread. A
+follow-up with a declared protocol, five variants and fresh held-out seeds
+also did not beat it ([M5_BASELINES.md](M5_BASELINES.md)), nor did a second
+round with a residual reward and several training seeds
+([M5_BASELINES-2.md](M5_BASELINES-2.md)).
 
 **Reading.**
 - **The attribution says why AS loses.** Calibrated correctly, it quotes at

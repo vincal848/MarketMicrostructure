@@ -13,3 +13,4 @@ runs/
 # LOBSTER sample data: free-tier files are redistributable only for personal
 # use, so they live locally and are never committed. See README > Data.
 data/
+.coverage

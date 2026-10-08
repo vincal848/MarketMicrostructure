@@ -29,7 +29,7 @@ first, in **[CHANGELOG.md](CHANGELOG.md)**.
 ## Status
 
 Version 1.0.0: all seven roadmap phases are implemented, test-first. The
-suite has 231 tests at 97% coverage and passes `mypy --strict` and ruff. CI
+suite has 237 tests at 97% coverage and passes `mypy --strict` and ruff. CI
 enforces the layer architecture.
 
 | Milestone | Acceptance | Result |
@@ -39,13 +39,13 @@ enforces the layer architecture.
 | M3 calibration | Hawkes beats Poisson on real flow; fit diagnostics reported | **met**: all 22 windows (2019 ITCH, 2025 MBP-10); branching 0.91–0.97 |
 | M3 validation | Simulated rates match theory; stylized facts compared with the real tape | **met**: rates within 1.1%; spread too tight and mid 1.6–2× too volatile (documented) |
 | M4 market makers | Calibrated baselines trade; PnL attributed, CIs over ≥30 seeds | **met**: all agents trade in 30/30 seeds; calibrated AS loses $946/episode to adverse selection |
-| M5 RL agent | Learned policy against the baselines on held-out seeds | **met**: DQN beats AS by $957 [643, 1,325] per episode; tied with a fixed spread |
+| M5 RL agent | Learned policy against the baselines on held-out seeds | **compared; the DQN does not beat fixed spread yet**: it beats AS by $957 [643, 1,325] per episode on 30 held-out seeds but not a fixed 1-tick spread (−10.8 [−116.5, +99.8]). Two follow-up rounds on fresh held-out seeds also fail to clear it: −8.1 [−76.2, +64.4] (round 1, 5 variants) and +54.3 [−15.1, +134.1] (round 2, residual reward, 4 variants, 3 training seeds each). The fixed spread is a strong baseline in this simulator ([round 1](docs/M5_BASELINES.md), [round 2](docs/M5_BASELINES-2.md)) |
 
 ## Quick start
 
 ```bash
 pip install -e ".[dev]"          # add ,rl for the PyTorch market maker
-pytest -q                        # 231 tests
+pytest -q                        # 237 tests
 ruff check . && mypy             # lint, strict types
 pre-commit install               # run both on every commit
 ```

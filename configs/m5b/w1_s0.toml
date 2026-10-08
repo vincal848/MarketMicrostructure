@@ -1,0 +1,55 @@
+# M5 follow-up variant, see docs/M5_BASELINES.md. Round 2 (docs/M5_BASELINES-2.md), tuning seeds 7000-7029.
+name = "m5b-w1-s0-tuning"
+
+[data]
+calibration = "../../runs/m3_calibrate_itch_spy_20190130.json"
+window = 2  # 11:00-11:30
+marks = "../../runs/m3_marks_itch_spy_20190130.npz"
+depth = "../../runs/depth_itch_spy_20190130_1100.json"
+tick = 100  # $0.01 in 1/10000-dollar price units
+
+[market]
+horizon = 300.0  # five-minute episodes
+latency = 0.0005  # 500 microseconds from decision to the book
+attribution_horizon = 1.0
+maker_fee = -20.0  # $0.0020/share rebate, in 1/10000-dollar units
+taker_fee = 30.0  # $0.0030/share fee
+max_distance_ticks = 20  # drop stub-quote placements (see FlowMarks.within)
+
+[seeds]
+calibration = [0, 4]
+train = [1000, 2000]
+validation = [5000, 5030]
+test = [7000, 7030]
+
+[agents.fixed-1]
+kind = "fixed-spread"
+half_spread_ticks = 1
+size = 100
+
+[agents.as]
+kind = "avellaneda-stoikov"
+gamma = 0.0001
+size = 100
+
+[agents.as-capped]
+kind = "avellaneda-stoikov"
+gamma = 0.0001
+size = 100
+inventory_cap = 500
+
+[rl]
+episodes = 200
+checkpoint_every = 40
+step_seconds = 1.0
+quote_size = 100
+max_inventory = 500
+inventory_penalty = 0.0086
+hidden = [64, 64]
+learning_rate = 0.0005
+gamma = 0.99
+batch_size = 64
+warmup_steps = 1000
+target_update_steps = 500
+epsilon_decay_steps = 30000
+seed = 0

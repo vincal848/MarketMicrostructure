@@ -13,8 +13,10 @@ window is selected), its `--marks-out` `.npz`, and a `depth-itch` snapshot.
 
 A run directory holds:
 
-    manifest.json   resolved config, git commit and dirty flag, Python and
-                    package versions, AS parameters used, creation time
+    manifest.json   resolved config (seeds included), git commit and dirty
+                    flag, Python and package versions, AS parameters used,
+                    creation time, and for a DQN run the per-seed paired
+                    PnL differences against every baseline with their CIs
     results.json    every run's metrics, per-agent summaries with bootstrap
                     CIs, DQN-vs-baseline paired differences, training log
     summary.md      the results table
@@ -33,7 +35,7 @@ import subprocess
 import tomllib
 from collections.abc import Callable, Iterator, Mapping
 from collections.abc import Set as AbstractSet
-from dataclasses import MISSING, asdict, dataclass, fields
+from dataclasses import MISSING, asdict, dataclass, fields, replace
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
@@ -148,6 +150,7 @@ class RLSpec:
     checkpoint_every: int
     env: dict[str, Any]  # EnvConfig fields other than the scenario
     dqn: DQNConfig
+    load_policy: Path | None = None  # evaluate these saved weights instead of training
 
 
 @dataclass(frozen=True)
@@ -173,17 +176,30 @@ def _take(
     return dict(table)
 
 
-def _rl_spec(table: Mapping[str, Any]) -> RLSpec:
+def _rl_spec(table: Mapping[str, Any], base: Path) -> RLSpec:
     try:
         from microstructure.rl import DQNConfig
     except ImportError as error:  # pragma: no cover - depends on the environment
         raise ConfigError("[rl] needs PyTorch: pip install -e '.[rl]'") from error
-    env_keys = {"step_seconds", "quote_size", "max_inventory", "inventory_penalty", "offsets"}
+    env_keys = {
+        "step_seconds",
+        "quote_size",
+        "max_inventory",
+        "inventory_penalty",
+        "offsets",
+        "flow_windows",
+        "fixed_half_spread_ticks",
+        "residual_reward",
+        "deviation_actions",
+    }
     dqn_keys = {f.name for f in fields(DQNConfig)}
-    values = _take(table, "rl", {"episodes", "checkpoint_every"}, env_keys | dqn_keys)
-    env: dict[str, Any] = {k: (tuple(v) if k == "offsets" else v) for k, v in values.items() if k in env_keys}
+    values = _take(table, "rl", {"episodes", "checkpoint_every"}, env_keys | dqn_keys | {"load_policy"})
+    env: dict[str, Any] = {
+        k: (tuple(v) if k in ("offsets", "flow_windows") else v) for k, v in values.items() if k in env_keys
+    }
     dqn: dict[str, Any] = {k: (tuple(v) if k == "hidden" else v) for k, v in values.items() if k in dqn_keys}
-    return RLSpec(values["episodes"], values["checkpoint_every"], env, DQNConfig(**dqn))
+    load = (base / values["load_policy"]).resolve() if "load_policy" in values else None
+    return RLSpec(values["episodes"], values["checkpoint_every"], env, DQNConfig(**dqn), load)
 
 
 def load_config(path: Path) -> ExperimentConfig:
@@ -222,7 +238,7 @@ def load_config(path: Path) -> ExperimentConfig:
         market=MarketSpec(**market),
         seeds=Seeds(**{k: SeedRange(*v) for k, v in seeds.items()}),
         agents=tuple(agents),
-        rl=_rl_spec(top["rl"]) if "rl" in top else None,
+        rl=_rl_spec(top["rl"], base) if "rl" in top else None,
         raw=raw,
     )
 
@@ -312,7 +328,7 @@ def _train_and_select(
     from microstructure.rl import train_dqn
 
     env_config = _env_config(config, spec, scenario)
-    validation_env = MarketMakingEnv(env_config)
+    validation_env = MarketMakingEnv(replace(env_config, residual_reward=False))
     checkpoints: list[tuple[float, int, dict[str, Any]]] = []
     history: list[dict[str, float]] = []
 
@@ -342,6 +358,15 @@ def _train_and_select(
     return policy, log, history
 
 
+def _load_policy(
+    path: Path, spec: RLSpec, env: MarketMakingEnv
+) -> tuple[Policy, TrainingLog, list[dict[str, float]]]:
+    from microstructure.rl import Policy, TrainingLog
+
+    policy = Policy.load(path, env.observation_size, spec.dqn.hidden, env.n_actions)
+    return policy, TrainingLog(), []
+
+
 def _git(*args: str) -> str:
     try:
         return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout.strip()
@@ -349,7 +374,29 @@ def _git(*args: str) -> str:
         return "unknown"
 
 
-def _manifest(config: ExperimentConfig, as_params: Mapping[str, ASParams]) -> dict[str, Any]:
+def paired_pnl_report(table: EvaluationTable, challenger: str) -> dict[str, Any]:
+    """Per baseline: test seeds, per-seed PnL difference `challenger - baseline`,
+    mean with bootstrap 95% CI, and whether that CI excludes zero in the
+    challenger's favour (the criterion for "beats the baseline")."""
+    report: dict[str, Any] = {}
+    for name in table.runs:
+        if name == challenger:
+            continue
+        diff = table.difference(challenger, name)
+        pnl_a, pnl_b = table.metric(challenger, "pnl"), table.metric(name, "pnl")
+        report[name] = {
+            "seeds": [run.seed for run in table.runs[name]],
+            "pnl_diff": [a - b for a, b in zip(pnl_a, pnl_b, strict=True)],
+            "mean": diff.mean,
+            "ci95": [diff.low, diff.high],
+            "beats": diff.low > 0.0,
+        }
+    return report
+
+
+def _manifest(
+    config: ExperimentConfig, as_params: Mapping[str, ASParams], paired: Mapping[str, Any]
+) -> dict[str, Any]:
     packages = {}
     for name in ("microstructure", "numpy", "scipy", "pandas", "torch"):
         try:
@@ -364,6 +411,7 @@ def _manifest(config: ExperimentConfig, as_params: Mapping[str, ASParams]) -> di
         "platform": platform.platform(),
         "packages": packages,
         "avellaneda_stoikov": {name: asdict(params) for name, params in as_params.items()},
+        "dqn_paired_pnl": dict(paired),
         "created": datetime.now(UTC).isoformat(timespec="seconds"),
     }
 
@@ -423,13 +471,18 @@ def run_experiment(config: ExperimentConfig, out_root: Path) -> Path:
     logger.info("baselines evaluated on %d test seeds", len(table.runs[config.agents[0].name]))
     run = _new_run_directory(out_root, config.name)
     results: dict[str, Any] = {}
+    paired: dict[str, Any] = {}
     if config.rl is not None:
-        policy, log, history = _train_and_select(config, config.rl, scenario)
-        test_env = MarketMakingEnv(_env_config(config, config.rl, scenario))
+        test_env = MarketMakingEnv(replace(_env_config(config, config.rl, scenario), residual_reward=False))
+        if config.rl.load_policy is None:
+            policy, log, history = _train_and_select(config, config.rl, scenario)
+        else:
+            policy, log, history = _load_policy(config.rl.load_policy, config.rl, test_env)
         dqn_runs = [
             evaluate_policy(test_env, policy, seed, market.attribution_horizon) for seed in config.seeds.test
         ]
         table = EvaluationTable({**table.runs, "dqn": dqn_runs})
+        paired = paired_pnl_report(table, "dqn")
         results["dqn_vs"] = {spec.name: asdict(table.difference("dqn", spec.name)) for spec in config.agents}
         results["training"] = {"episode_returns": log.episode_returns, "validation": history}
         policy.save(run / "policy.pt")
@@ -440,7 +493,7 @@ def run_experiment(config: ExperimentConfig, out_root: Path) -> Path:
         **results,
     }
     (run / "manifest.json").write_text(
-        json.dumps(_manifest(config, as_params), indent=2) + "\n", encoding="utf-8"
+        json.dumps(_manifest(config, as_params, paired), indent=2) + "\n", encoding="utf-8"
     )
     (run / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     (run / "summary.md").write_text(_markdown(table), encoding="utf-8")

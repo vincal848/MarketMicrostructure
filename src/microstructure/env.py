@@ -14,11 +14,21 @@ i.e. mark-to-market PnL minus a quadratic inventory penalty. Spooner et al.
 (2018) dampen inventory in this way so the learned policy cannot earn
 reward by carrying a directional position.
 
-The observation has 10 features, all observable by a real participant:
+The observation has 10 base features, all observable by a real participant:
 inventory and time-to-go (normalised), spread, L1 and 5-level depth
 imbalance, microprice offset, the last step's mid move and signed traded
-volume, and the queue ahead of each own quote. The Hawkes intensities that
-drive the simulator are deliberately *not* observed.
+volume, and the queue ahead of each own quote. `flow_windows` (seconds)
+appends, per window, the signed traded-volume imbalance and the mid move
+over that trailing window. The Hawkes intensities that drive the simulator
+are deliberately *not* observed.
+
+Two options tie the agent to the fixed-spread baseline. `residual_reward`
+runs a shadow fixed-spread agent on the same seed in a second simulator
+and subtracts its per-step MTM change from the reward, so only deviations
+that beat the baseline are paid. `deviation_actions` reads `offsets` as ticks
+moved away from the fixed-spread quote (negative = tighter) instead of ticks
+behind the touch. The shadow is a separate simulation, so the pairing is as
+approximate as in `evaluation`: the agent's orders change its own book.
 
 `episode_metrics` reports an episode with the same accounting and attribution
 as `evaluation.run_once`, so a learned policy is compared with the
@@ -27,14 +37,16 @@ baselines like for like.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
 from microstructure.accounting import Ledger
+from microstructure.agents import FixedSpreadAgent, post_only
 from microstructure.book import Side
-from microstructure.evaluation import RunMetrics, Scenario, metrics_from
+from microstructure.evaluation import Recorded, RunMetrics, Scenario, metrics_from
 from microstructure.simulator import Action, AgentFill, MarketSimulator, MarketView, Quote
 
 OBSERVATION_SIZE = 10
@@ -50,6 +62,10 @@ class EnvConfig:
     offsets: tuple[int, ...] = (0, 1, 2, 4)
     maker_fee: float = 0.0  # per share, price units (negative = rebate)
     taker_fee: float = 0.0
+    flow_windows: tuple[float, ...] = ()  # extra trailing windows for flow imbalance and mid move
+    fixed_half_spread_ticks: int = 1  # the fixed-spread policy that the two options below refer to
+    residual_reward: bool = False  # pay the agent its MTM change minus that of a shadow fixed-spread agent
+    deviation_actions: bool = False  # offsets are ticks of deviation from the fixed-spread quote
 
     def __post_init__(self) -> None:
         if self.step_seconds <= 0 or self.quote_size <= 0 or self.max_inventory < self.quote_size:
@@ -77,6 +93,23 @@ class _EnvAgent:
 
 
 @dataclass
+class _Shadow:
+    """The fixed-spread agent, alone in its own simulation of the same seed."""
+
+    simulator: MarketSimulator
+    ledger: Ledger
+    previous_mtm: float = 0.0
+
+    def advance(self, until: float) -> float:
+        """Run to `until`; return the MTM change over the interval."""
+        self.simulator.advance(until)
+        mid = self.simulator.mid()
+        mtm = self.ledger.mark_to_market(mid if mid is not None else self.simulator.last_mid)
+        change, self.previous_mtm = mtm - self.previous_mtm, mtm
+        return change
+
+
+@dataclass
 class _Episode:
     """Everything that exists only between `reset` and the horizon."""
 
@@ -85,6 +118,8 @@ class _Episode:
     agent: _EnvAgent
     previous_mtm: float = 0.0
     previous_mid: float = 0.0
+    shadow: _Shadow | None = None
+    mids: list[float] = field(default_factory=list)  # mid after each step, starting with the reset mid
     done: bool = False
 
     def mid(self) -> float:
@@ -93,10 +128,9 @@ class _Episode:
 
 
 class MarketMakingEnv:
-    observation_size = OBSERVATION_SIZE
-
     def __init__(self, config: EnvConfig) -> None:
         self.config = config
+        self.observation_size = OBSERVATION_SIZE + 2 * len(config.flow_windows)
         self.n_actions = len(config.offsets) ** 2
         self._episode: _Episode | None = None
 
@@ -110,6 +144,12 @@ class MarketMakingEnv:
         """The quote an action means against the given touch."""
         bid_offset, ask_offset = divmod(action, len(self.config.offsets))
         tick = self.config.scenario.tick
+        if self.config.deviation_actions:
+            mid_ticks = (best_bid + best_ask) / 2 / tick
+            half = self.config.fixed_half_spread_ticks
+            bid = math.floor(mid_ticks - half) * tick - self.config.offsets[bid_offset] * tick
+            ask = math.ceil(mid_ticks + half) * tick + self.config.offsets[ask_offset] * tick
+            return self.sized_quote(*post_only(bid, ask, best_bid, best_ask, tick))
         return self.sized_quote(
             best_bid - self.config.offsets[bid_offset] * tick,
             best_ask + self.config.offsets[ask_offset] * tick,
@@ -133,9 +173,25 @@ class MarketMakingEnv:
         simulator = MarketSimulator(
             scenario.params, scenario.marks, scenario.initial_depth, scenario.config(seed), agents=(agent,)
         )
-        self._episode = _Episode(seed, simulator, agent)
+        self._episode = _Episode(seed, simulator, agent, shadow=self._shadow(seed))
         self._episode.previous_mid = self._episode.mid()
+        self._episode.mids.append(self._episode.previous_mid)
         return self._observation(self._episode, mid_move=0.0, since=0.0)
+
+    def _shadow(self, seed: int) -> _Shadow | None:
+        if not self.config.residual_reward:
+            return None
+        scenario = self.config.scenario
+        ledger = Ledger(maker_fee=self.config.maker_fee, taker_fee=self.config.taker_fee)
+        fixed = FixedSpreadAgent(self.config.fixed_half_spread_ticks, scenario.tick, self.config.quote_size)
+        simulator = MarketSimulator(
+            scenario.params,
+            scenario.marks,
+            scenario.initial_depth,
+            scenario.config(seed),
+            agents=(Recorded(fixed, ledger),),
+        )
+        return _Shadow(simulator, ledger)
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, dict[str, Any]]:
         episode = self._episode
@@ -162,9 +218,13 @@ class MarketMakingEnv:
         scale = self.config.scenario.tick * self.config.quote_size
         inventory = agent.ledger.inventory
         penalty = self.config.inventory_penalty * (inventory / self.config.quote_size) ** 2
-        reward = (mtm - episode.previous_mtm) / scale - penalty
+        gain = mtm - episode.previous_mtm
+        if episode.shadow is not None:
+            gain -= episode.shadow.advance(end)
+        reward = gain / scale - penalty
         mid_move = (mid - episode.previous_mid) / self.config.scenario.tick
         episode.previous_mtm, episode.previous_mid = mtm, mid
+        episode.mids.append(mid)
         info = {"mtm": mtm, "inventory": inventory, "time": end}
         return self._observation(episode, mid_move=mid_move, since=start), float(reward), episode.done, info
 
@@ -180,7 +240,7 @@ class MarketMakingEnv:
 
     def _observation(self, episode: _Episode, mid_move: float, since: float) -> np.ndarray:
         simulator, tick = episode.simulator, self.config.scenario.tick
-        features = np.zeros(OBSERVATION_SIZE, dtype=np.float32)
+        features = np.zeros(self.observation_size, dtype=np.float32)
         features[0] = episode.agent.ledger.inventory / self.config.max_inventory
         features[1] = max(self.config.scenario.horizon - simulator.now, 0.0) / self.config.scenario.horizon
         bids, asks = simulator.book.depth_snapshot(5)
@@ -200,4 +260,10 @@ class MarketMakingEnv:
         for slot, side in ((8, Side.BID), (9, Side.ASK)):
             order = own.get(side)
             features[slot] = -1.0 if order is None else simulator.book.queue_ahead(order.order_id) / scale
+        for k, window in enumerate(self.config.flow_windows):
+            bought, sold = simulator.trade_flow_since(simulator.now - window)
+            back = min(round(window / self.config.step_seconds), len(episode.mids) - 1)
+            move = (episode.mids[-1] - episode.mids[-1 - back]) / tick
+            features[OBSERVATION_SIZE + 2 * k] = (bought - sold) / (bought + sold + 1.0)
+            features[OBSERVATION_SIZE + 2 * k + 1] = float(np.clip(move, -20.0, 20.0)) / 20.0
         return features

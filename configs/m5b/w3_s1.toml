@@ -54,5 +54,5 @@ target_update_steps = 500
 epsilon_decay_steps = 30000
 seed = 1
 deviation_actions = true
-offsets = [-1, 0, 1, 2]
-prior_action = 5
+offsets = [0, 1, 2, 3]
+prior_action = 0

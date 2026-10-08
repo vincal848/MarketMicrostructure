@@ -58,3 +58,19 @@ change the book differently (as in `evaluation`'s pairing). So the shadow
 is a noisy, slightly pessimistic counterfactual, not a control variate. W2
 and W4 are run as declared; the accounting-identity test replaces the
 zero-residual test.
+
+## Amendment 2: W3's action grid (compute, made after W1, W2, W4 finished)
+
+The first W3 runs (deviations −1, 0, +1, +2) did not finish in over an hour
+and were killed with no result, no tuning score and no checkpoint seen. Cause:
+`MarketSimulator._settle_fills` schedules an extra `_DECIDE` event on every
+passive fill, and each `_DECIDE` reschedules itself, so an agent gets one
+more perpetual decision chain per fill. A policy quoting inside the fixed
+spread fills several times as often as the baselines, and the number of
+decision events grows with it. This is an existing simulator quirk that
+affects every agent (more fills, more requotes) and is not fixed here, since
+fixing it would change the baselines' numbers. W3 is rerun with deviations
+(0, +1, +2, +3): never tighter than the fixed spread, zero deviation as the
+prior (action 0). It is the same W3 variant, so the budget stays at 4
+variants. W1, W2 and W4 results were visible when I chose the new grid;
+the choice was driven by run time only.

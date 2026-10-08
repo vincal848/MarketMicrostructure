@@ -13,8 +13,10 @@ window is selected), its `--marks-out` `.npz`, and a `depth-itch` snapshot.
 
 A run directory holds:
 
-    manifest.json   resolved config, git commit and dirty flag, Python and
-                    package versions, AS parameters used, creation time
+    manifest.json   resolved config (seeds included), git commit and dirty
+                    flag, Python and package versions, AS parameters used,
+                    creation time, and for a DQN run the per-seed paired
+                    PnL differences against every baseline with their CIs
     results.json    every run's metrics, per-agent summaries with bootstrap
                     CIs, DQN-vs-baseline paired differences, training log
     summary.md      the results table
@@ -349,7 +351,29 @@ def _git(*args: str) -> str:
         return "unknown"
 
 
-def _manifest(config: ExperimentConfig, as_params: Mapping[str, ASParams]) -> dict[str, Any]:
+def paired_pnl_report(table: EvaluationTable, challenger: str) -> dict[str, Any]:
+    """Per baseline: test seeds, per-seed PnL difference `challenger - baseline`,
+    mean with bootstrap 95% CI, and whether that CI excludes zero in the
+    challenger's favour (the criterion for "beats the baseline")."""
+    report: dict[str, Any] = {}
+    for name in table.runs:
+        if name == challenger:
+            continue
+        diff = table.difference(challenger, name)
+        pnl_a, pnl_b = table.metric(challenger, "pnl"), table.metric(name, "pnl")
+        report[name] = {
+            "seeds": [run.seed for run in table.runs[name]],
+            "pnl_diff": [a - b for a, b in zip(pnl_a, pnl_b, strict=True)],
+            "mean": diff.mean,
+            "ci95": [diff.low, diff.high],
+            "beats": diff.low > 0.0,
+        }
+    return report
+
+
+def _manifest(
+    config: ExperimentConfig, as_params: Mapping[str, ASParams], paired: Mapping[str, Any]
+) -> dict[str, Any]:
     packages = {}
     for name in ("microstructure", "numpy", "scipy", "pandas", "torch"):
         try:
@@ -364,6 +388,7 @@ def _manifest(config: ExperimentConfig, as_params: Mapping[str, ASParams]) -> di
         "platform": platform.platform(),
         "packages": packages,
         "avellaneda_stoikov": {name: asdict(params) for name, params in as_params.items()},
+        "dqn_paired_pnl": dict(paired),
         "created": datetime.now(UTC).isoformat(timespec="seconds"),
     }
 
@@ -423,6 +448,7 @@ def run_experiment(config: ExperimentConfig, out_root: Path) -> Path:
     logger.info("baselines evaluated on %d test seeds", len(table.runs[config.agents[0].name]))
     run = _new_run_directory(out_root, config.name)
     results: dict[str, Any] = {}
+    paired: dict[str, Any] = {}
     if config.rl is not None:
         policy, log, history = _train_and_select(config, config.rl, scenario)
         test_env = MarketMakingEnv(_env_config(config, config.rl, scenario))
@@ -430,6 +456,7 @@ def run_experiment(config: ExperimentConfig, out_root: Path) -> Path:
             evaluate_policy(test_env, policy, seed, market.attribution_horizon) for seed in config.seeds.test
         ]
         table = EvaluationTable({**table.runs, "dqn": dqn_runs})
+        paired = paired_pnl_report(table, "dqn")
         results["dqn_vs"] = {spec.name: asdict(table.difference("dqn", spec.name)) for spec in config.agents}
         results["training"] = {"episode_returns": log.episode_returns, "validation": history}
         policy.save(run / "policy.pt")
@@ -440,7 +467,7 @@ def run_experiment(config: ExperimentConfig, out_root: Path) -> Path:
         **results,
     }
     (run / "manifest.json").write_text(
-        json.dumps(_manifest(config, as_params), indent=2) + "\n", encoding="utf-8"
+        json.dumps(_manifest(config, as_params, paired), indent=2) + "\n", encoding="utf-8"
     )
     (run / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     (run / "summary.md").write_text(_markdown(table), encoding="utf-8")

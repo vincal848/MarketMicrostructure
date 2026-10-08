@@ -39,7 +39,7 @@ enforces the layer architecture.
 | M3 calibration | Hawkes beats Poisson on real flow; fit diagnostics reported | **met**: all 22 windows (2019 ITCH, 2025 MBP-10); branching 0.91–0.97 |
 | M3 validation | Simulated rates match theory; stylized facts compared with the real tape | **met**: rates within 1.1%; spread too tight and mid 1.6–2× too volatile (documented) |
 | M4 market makers | Calibrated baselines trade; PnL attributed, CIs over ≥30 seeds | **met**: all agents trade in 30/30 seeds; calibrated AS loses $946/episode to adverse selection |
-| M5 RL agent | Learned policy against the baselines on held-out seeds | **met**: DQN beats AS by $957 [643, 1,325] per episode; tied with a fixed spread |
+| M5 RL agent | Learned policy against the baselines on held-out seeds | **compared, baseline not beaten**: the DQN beats AS by $957 [643, 1,325] per episode on 30 held-out seeds, but does not beat a fixed 1-tick spread (paired difference −10.8 [−116.5, +99.8]) |
 
 ## Quick start
 

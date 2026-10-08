@@ -96,6 +96,18 @@ def test_experiment_trains_selects_and_tests_a_dqn(workspace: Path) -> None:
         assert entry["ci95"] == [results["dqn_vs"][name]["low"], results["dqn_vs"][name]["high"]]
 
 
+def test_a_saved_policy_is_reloaded_without_retraining(workspace: Path) -> None:
+    pytest.importorskip("torch")
+    (workspace / "experiment.toml").write_text(CONFIG + RL)
+    first = run_experiment(load_config(workspace / "experiment.toml"), workspace / "runs")
+    saved = first / "policy.pt"
+    (workspace / "reload.toml").write_text(CONFIG + RL + f'load_policy = "{saved.as_posix()}"\n')
+    second = run_experiment(load_config(workspace / "reload.toml"), workspace / "runs")
+    runs = [json.loads((d / "results.json").read_text())["runs"]["dqn"] for d in (first, second)]
+    assert runs[0] == runs[1]
+    assert json.loads((second / "results.json").read_text())["training"]["episode_returns"] == []
+
+
 def test_max_distance_ticks_truncates_the_scenario_marks(workspace: Path) -> None:
     capped = CONFIG.replace("horizon = 20.0", "horizon = 20.0\nmax_distance_ticks = 2")
     (workspace / "experiment.toml").write_text(capped)

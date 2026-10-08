@@ -140,3 +140,44 @@ def test_flow_windows_append_trailing_features_consistent_with_the_base_ones() -
     # A window of one step is the base step feature (mid move is scaled by 20 instead of 10).
     assert observation[10] == pytest.approx(observation[7])
     assert observation[11] == pytest.approx(observation[6] / 2.0, abs=1e-6)
+
+
+def test_deviation_actions_are_offsets_from_the_fixed_spread_quote() -> None:
+    from microstructure.agents import FixedSpreadAgent
+    from microstructure.simulator import MarketView
+
+    config = EnvConfig(scenario=_scenario(), deviation_actions=True, offsets=(-1, 0, 1))
+    env = MarketMakingEnv(config)
+    env.reset(seed=0)
+    bid, ask = MID - TICK, MID  # the initial touch of the test scenario
+    fixed = FixedSpreadAgent(1, TICK, 100).decide(MarketView(0.0, bid, ask, ([], []), ()))
+    assert env.quote_for(env.action_index(0, 0), bid, ask) == fixed[0]
+    wider = env.quote_for(env.action_index(1, 1), bid, ask)
+    assert fixed[0].bid is not None
+    assert fixed[0].ask is not None
+    assert wider.bid is not None
+    assert wider.ask is not None
+    assert wider.bid[0] == fixed[0].bid[0] - TICK
+    assert wider.ask[0] == fixed[0].ask[0] + TICK
+
+
+def test_residual_reward_subtracts_exactly_the_shadow_fixed_spread_pnl() -> None:
+    def total(residual: bool) -> tuple[float, MarketMakingEnv]:
+        env = MarketMakingEnv(
+            EnvConfig(scenario=_scenario(), inventory_penalty=0.01, residual_reward=residual)
+        )
+        env.reset(seed=2)
+        done, reward_sum = False, 0.0
+        while not done:
+            _, reward, done, _ = env.step(5)
+            reward_sum += reward
+        return reward_sum, env
+
+    plain, _ = total(False)
+    residual, env = total(True)
+    episode = env._episode
+    assert episode is not None
+    assert episode.shadow is not None
+    shadow_mtm = episode.shadow.previous_mtm
+    assert shadow_mtm != 0.0  # the shadow trades
+    assert plain - residual == pytest.approx(shadow_mtm / (TICK * 100))

@@ -35,7 +35,7 @@ import subprocess
 import tomllib
 from collections.abc import Callable, Iterator, Mapping
 from collections.abc import Set as AbstractSet
-from dataclasses import MISSING, asdict, dataclass, fields
+from dataclasses import MISSING, asdict, dataclass, fields, replace
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
@@ -150,6 +150,7 @@ class RLSpec:
     checkpoint_every: int
     env: dict[str, Any]  # EnvConfig fields other than the scenario
     dqn: DQNConfig
+    load_policy: Path | None = None  # evaluate these saved weights instead of training
 
 
 @dataclass(frozen=True)
@@ -175,19 +176,30 @@ def _take(
     return dict(table)
 
 
-def _rl_spec(table: Mapping[str, Any]) -> RLSpec:
+def _rl_spec(table: Mapping[str, Any], base: Path) -> RLSpec:
     try:
         from microstructure.rl import DQNConfig
     except ImportError as error:  # pragma: no cover - depends on the environment
         raise ConfigError("[rl] needs PyTorch: pip install -e '.[rl]'") from error
-    env_keys = {"step_seconds", "quote_size", "max_inventory", "inventory_penalty", "offsets", "flow_windows"}
+    env_keys = {
+        "step_seconds",
+        "quote_size",
+        "max_inventory",
+        "inventory_penalty",
+        "offsets",
+        "flow_windows",
+        "fixed_half_spread_ticks",
+        "residual_reward",
+        "deviation_actions",
+    }
     dqn_keys = {f.name for f in fields(DQNConfig)}
-    values = _take(table, "rl", {"episodes", "checkpoint_every"}, env_keys | dqn_keys)
+    values = _take(table, "rl", {"episodes", "checkpoint_every"}, env_keys | dqn_keys | {"load_policy"})
     env: dict[str, Any] = {
         k: (tuple(v) if k in ("offsets", "flow_windows") else v) for k, v in values.items() if k in env_keys
     }
     dqn: dict[str, Any] = {k: (tuple(v) if k == "hidden" else v) for k, v in values.items() if k in dqn_keys}
-    return RLSpec(values["episodes"], values["checkpoint_every"], env, DQNConfig(**dqn))
+    load = (base / values["load_policy"]).resolve() if "load_policy" in values else None
+    return RLSpec(values["episodes"], values["checkpoint_every"], env, DQNConfig(**dqn), load)
 
 
 def load_config(path: Path) -> ExperimentConfig:
@@ -226,7 +238,7 @@ def load_config(path: Path) -> ExperimentConfig:
         market=MarketSpec(**market),
         seeds=Seeds(**{k: SeedRange(*v) for k, v in seeds.items()}),
         agents=tuple(agents),
-        rl=_rl_spec(top["rl"]) if "rl" in top else None,
+        rl=_rl_spec(top["rl"], base) if "rl" in top else None,
         raw=raw,
     )
 
@@ -316,7 +328,7 @@ def _train_and_select(
     from microstructure.rl import train_dqn
 
     env_config = _env_config(config, spec, scenario)
-    validation_env = MarketMakingEnv(env_config)
+    validation_env = MarketMakingEnv(replace(env_config, residual_reward=False))
     checkpoints: list[tuple[float, int, dict[str, Any]]] = []
     history: list[dict[str, float]] = []
 
@@ -344,6 +356,15 @@ def _train_and_select(
         best = max(checkpoints, key=lambda c: (c[0], -c[1]))  # best validation PnL, earliest on ties
         policy.network.load_state_dict(best[2])
     return policy, log, history
+
+
+def _load_policy(
+    path: Path, spec: RLSpec, env: MarketMakingEnv
+) -> tuple[Policy, TrainingLog, list[dict[str, float]]]:
+    from microstructure.rl import Policy, TrainingLog
+
+    policy = Policy.load(path, env.observation_size, spec.dqn.hidden, env.n_actions)
+    return policy, TrainingLog(), []
 
 
 def _git(*args: str) -> str:
@@ -452,8 +473,11 @@ def run_experiment(config: ExperimentConfig, out_root: Path) -> Path:
     results: dict[str, Any] = {}
     paired: dict[str, Any] = {}
     if config.rl is not None:
-        policy, log, history = _train_and_select(config, config.rl, scenario)
-        test_env = MarketMakingEnv(_env_config(config, config.rl, scenario))
+        test_env = MarketMakingEnv(replace(_env_config(config, config.rl, scenario), residual_reward=False))
+        if config.rl.load_policy is None:
+            policy, log, history = _train_and_select(config, config.rl, scenario)
+        else:
+            policy, log, history = _load_policy(config.rl.load_policy, config.rl, test_env)
         dqn_runs = [
             evaluate_policy(test_env, policy, seed, market.attribution_horizon) for seed in config.seeds.test
         ]

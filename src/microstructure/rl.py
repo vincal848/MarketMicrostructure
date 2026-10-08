@@ -55,6 +55,7 @@ class DQNConfig:
     epsilon_end: float = 0.05
     epsilon_decay_steps: int = 5_000
     grad_clip: float = 10.0
+    prior_action: int = -1  # >= 0: start with this action as the greedy choice
     seed: int = 0
 
     def epsilon(self, step: int) -> float:
@@ -123,6 +124,16 @@ def _network(observation_size: int, hidden: tuple[int, ...], n_actions: int) -> 
     return nn.Sequential(*layers)
 
 
+def _favour(network: nn.Sequential, action: int) -> None:
+    """Make `action` the greedy choice at initialisation, whatever the input."""
+    last = network[-1]
+    assert isinstance(last, nn.Linear)
+    with torch.no_grad():
+        last.weight.mul_(0.01)
+        last.bias.zero_()
+        last.bias[action] = 1.0
+
+
 class Policy:
     """Greedy policy of a trained Q-network."""
 
@@ -167,11 +178,14 @@ def train_dqn(
     `on_episode(episode, return, policy)` runs after each episode, e.g. to
     checkpoint the policy against validation seeds.
     """
+    torch.set_num_threads(1)  # float summation order, hence the trained weights, depend on it
     torch.manual_seed(config.seed)
     rng = np.random.default_rng(config.seed)
     env = make_env()
     online = _network(env.observation_size, config.hidden, env.n_actions)
     target = _network(env.observation_size, config.hidden, env.n_actions)
+    if config.prior_action >= 0:
+        _favour(online, config.prior_action)
     target.load_state_dict(online.state_dict())
     optimizer = torch.optim.Adam(online.parameters(), lr=config.learning_rate)
     buffer = ReplayBuffer(config.buffer_capacity, env.observation_size, seed=config.seed)

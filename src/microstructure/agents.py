@@ -25,7 +25,7 @@ from microstructure.simulator import Action, AgentFill, MarketView, Quote
 from microstructure.stylized import MarketTape, signature_plot
 
 
-def _post_only(bid: int, ask: int, best_bid: int, best_ask: int, tick: int) -> tuple[int, int]:
+def post_only(bid: int, ask: int, best_bid: int, best_ask: int, tick: int) -> tuple[int, int]:
     return min(bid, best_ask - tick), max(ask, best_bid + tick)
 
 
@@ -56,7 +56,7 @@ class AvellanedaStoikovAgent:
         time_to_go = max(self.horizon - view.time, 0.0)
         exact = quotes(mid_ticks, self.inventory, time_to_go, self.params)
         bid, ask = math.floor(exact.bid) * self.tick, math.ceil(exact.ask) * self.tick
-        bid, ask = _post_only(bid, ask, view.best_bid, view.best_ask, self.tick)
+        bid, ask = post_only(bid, ask, view.best_bid, view.best_ask, self.tick)
         bid_qty, ask_qty = self.size, self.size
         if self.inventory_cap is not None:
             bid_qty = min(bid_qty, self.inventory_cap - self.inventory)
@@ -86,7 +86,7 @@ class FixedSpreadAgent:
         mid_ticks = (view.best_bid + view.best_ask) / 2 / self.tick
         bid = math.floor(mid_ticks - self.half_spread_ticks) * self.tick
         ask = math.ceil(mid_ticks + self.half_spread_ticks) * self.tick
-        bid, ask = _post_only(bid, ask, view.best_bid, view.best_ask, self.tick)
+        bid, ask = post_only(bid, ask, view.best_bid, view.best_ask, self.tick)
         return [Quote(bid=(bid, self.size), ask=(ask, self.size))]
 
     def on_fill(self, fill: AgentFill) -> None:

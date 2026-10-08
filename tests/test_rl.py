@@ -54,3 +54,10 @@ def test_training_is_reproducible_from_its_seed() -> None:
     _, second = train_dqn(BanditEnv, config, episodes=80, seeds=range(80))
     assert first.losses == second.losses
     assert first.episode_returns == second.episode_returns
+
+
+def test_prior_action_is_the_initial_greedy_choice() -> None:
+    config = DQNConfig(hidden=(8,), prior_action=3, seed=1)
+    policy, _ = train_dqn(BanditEnv, config, episodes=0, seeds=[])
+    for scale in (0.1, 1.0, 5.0):
+        assert policy.act(np.full(3, scale, dtype=np.float32)) == 3

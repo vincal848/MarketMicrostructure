@@ -90,7 +90,7 @@ def paired_difference(
     return bootstrap_mean(list(diff), n_boot, level, seed)
 
 
-class _Recorded:
+class Recorded:
     """Forwards to an agent while booking its fills in a ledger."""
 
     def __init__(self, agent: Agent, ledger: Ledger) -> None:
@@ -139,7 +139,7 @@ def run_once(
         scenario.marks,
         scenario.initial_depth,
         scenario.config(seed),
-        agents=(_Recorded(agent, ledger),),
+        agents=(Recorded(agent, ledger),),
     )
     return metrics_from(ledger, simulator.run().tape, seed, attribution_horizon)
 

@@ -42,7 +42,19 @@ are spent and are not used here.
   spread) AND of (DQN − AS) PnL per episode both exclude 0 on the positive
   side (`paired_pnl_report`, `beats`).
 - **Null / planted checks**: unit tests run the paired report on a tied pair
-  and a planted edge (round 1); the residual shadow agent is tested to give
-  zero residual reward when the agent quotes the fixed-spread quote.
+  and a planted edge (round 1); the residual reward is tested to equal the
+  plain reward minus exactly the shadow's MTM change.
 - **If nothing clears**: README says so with the numbers, and that the
   fixed spread is a strong baseline in this simulator. Stop there.
+
+## Amendment, committed before any variant ran
+
+I had planned a test that the residual reward is zero when the agent
+quotes the fixed-spread quote. It is not: on the unit-test scenario (60 s
+episodes, 40 seeds) the residual of an agent playing exactly the fixed quote
+averages −13.7 ± 5.5 tick-share units with a standard deviation of about 35,
+because the shadow is a separate simulation in which the agent's orders
+change the book differently (as in `evaluation`'s pairing). So the shadow
+is a noisy, slightly pessimistic counterfactual, not a control variate. W2
+and W4 are run as declared; the accounting-identity test replaces the
+zero-residual test.
